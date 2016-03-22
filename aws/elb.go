@@ -7,7 +7,7 @@ import (
 )
 
 // MakeMasterLoadBalancer creates a load balancer the connects to each
-// etcd node.
+// master node.
 func MakeMasterLoadBalancer(parameters *Parameters, t *cfn.Template) error {
 	t.AddResource("MasterLoadBalancer", cfn.ElasticLoadBalancingLoadBalancer{
 		Scheme:  cfn.String("internal"),
@@ -59,31 +59,6 @@ func MakeMasterLoadBalancer(parameters *Parameters, t *cfn.Template) error {
 				CidrIp:     cfn.String("0.0.0.0/0"),
 			},
 		},
-	})
-
-	t.AddResource("HealthTopic", cfn.SNSTopic{
-		DisplayName: cfn.String(fmt.Sprintf("cloudwatch notifications for %s", parameters.DnsName)),
-	})
-
-	t.AddResource("MasterLoadBalancerHealthAlarm", cfn.CloudWatchAlarm{
-		ActionsEnabled:     cfn.Bool(true),
-		AlarmActions:       cfn.StringList(cfn.Ref("HealthTopic").String()),
-		AlarmDescription:   cfn.String("master instance health"),
-		AlarmName:          cfn.String("MasterInstanceHealth"),
-		ComparisonOperator: cfn.String("LessThanThreshold"),
-		EvaluationPeriods:  cfn.String("1"),
-		Dimensions: &cfn.CloudWatchMetricDimensionList{
-			cfn.CloudWatchMetricDimension{
-				Name:  cfn.String("LoadBalancerName"),
-				Value: cfn.Ref("MasterLoadBalancer").String(),
-			},
-		},
-		MetricName: cfn.String("HealthyHostCount"),
-		Namespace:  cfn.String("AWS/ELB"),
-		Period:     cfn.String("60"),
-		Statistic:  cfn.String("Minimum"),
-		Threshold:  cfn.String("3"),
-		Unit:       cfn.String("Count"),
 	})
 
 	return nil

@@ -6,7 +6,7 @@ import (
 	cfn "github.com/crewjam/go-cloudformation"
 )
 
-// MakeVPC creates the VPC
+// MakeVPC creates a VPC with a subnet for each of up to four availability zones.
 func MakeVPC(parameters *Parameters, t *cfn.Template) error {
 	t.AddResource("Vpc", cfn.EC2VPC{
 		CidrBlock:          cfn.String("10.0.0.0/16"),

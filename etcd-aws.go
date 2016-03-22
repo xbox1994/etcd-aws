@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -58,9 +58,9 @@ type etcdMember struct {
 
 var etcdLocalURL string
 
-// handleEvent is invoked whenever we get a lifecycle terminate message. It removes
+// handleLifecycleEvent is invoked whenever we get a lifecycle terminate message. It removes
 // terminated instances from the etcd cluster.
-func handleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, err error) {
+func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, err error) {
 	if m.LifecycleTransition != "autoscaling:EC2_INSTANCE_TERMINATING" {
 		return true, nil
 	}
@@ -82,11 +82,13 @@ func handleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, err error
 	}
 
 	if memberID == "" {
-		log.Printf("instance:%s termination event for non-member", m.EC2InstanceID)
+		log.WithField("InstanceID", m.EC2InstanceID).Warn("received termination event for non-member")
 		return true, nil
 	}
 
-	log.Printf("member:%s instance:%s removing from the cluster", memberID, m.EC2InstanceID)
+	log.WithFields(log.Fields{
+		"InstanceID": m.EC2InstanceID,
+		"MemberID":   memberID}).Info("removing from cluster")
 	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/v2/members/%s", etcdLocalURL, memberID), nil)
 	_, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -96,6 +98,7 @@ func handleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, err error
 	return false, nil
 }
 
+// backupService invokes backupOnce() periodically if the current node is the cluster leader.
 func backupService(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir string, interval time.Duration) error {
 	instance, err := s.Instance()
 	if err != nil {
@@ -121,7 +124,7 @@ func backupService(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 		// if the cluster has a leader other than the current node, then don't do the
 		// backup.
 		if nodeState.LeaderInfo.Leader != "" && nodeState.ID != nodeState.LeaderInfo.Leader {
-			log.Printf("%s: http://%s:2379/v2/stats/self: not the leader", *instance.InstanceId,
+			log.Printf("backup: %s: http://%s:2379/v2/stats/self: not the leader", *instance.InstanceId,
 				*instance.PrivateIpAddress)
 			<-ticker
 			continue
@@ -134,6 +137,20 @@ func backupService(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 	panic("not reached")
 }
 
+// getInstanceTag returns the first occurrence of the specified tag on the instance
+// or an empty string if the tag is not found.
+func getInstanceTag(instance *ec2.Instance, tagName string) string {
+	rv := ""
+	for _, tag := range instance.Tags {
+		if *tag.Key == tagName {
+			rv = *tag.Value
+		}
+	}
+	return rv
+}
+
+// dumpEtcdNode writes a JSON representation of the nodes and and below `key`
+// to `w`. Returns the number of nodes traversed.
 func dumpEtcdNode(key string, etcdClient *etcd.Client, w io.Writer) (int, error) {
 	response, err := etcdClient.Get(key, false, false)
 	if err != nil {
@@ -168,16 +185,9 @@ func dumpEtcdNode(key string, etcdClient *etcd.Client, w io.Writer) (int, error)
 	return count, nil
 }
 
-func getInstanceTag(instance *ec2.Instance, tagName string) string {
-	rv := ""
-	for _, tag := range instance.Tags {
-		if *tag.Key == tagName {
-			rv = *tag.Value
-		}
-	}
-	return rv
-}
-
+// backupOnce dumps all the nodes in the etcd cluster to the specified S3 bucket. On
+// success it emits a CloudWatch metric for the number of keys backed up. The absence
+// of data on this metric indicates the backup has failed.
 func backupOnce(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir string) error {
 	instance, err := s.Instance()
 	if err != nil {
@@ -240,6 +250,8 @@ func backupOnce(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir string) 
 	return nil
 }
 
+// loadEtcdNode reads `r` containing JSON objects representing etcd nodes and
+// loads them into server.
 func loadEtcdNode(etcdClient *etcd.Client, r io.Reader) error {
 	jsonReader := json.NewDecoder(r)
 	for {
@@ -279,6 +291,7 @@ func loadEtcdNode(etcdClient *etcd.Client, r io.Reader) error {
 	return nil
 }
 
+// restoreBackup reads the backup from S3 and applies it to the current cluster.
 func restoreBackup(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir string) error {
 	instance, err := s.Instance()
 	if err != nil {
@@ -301,7 +314,7 @@ func restoreBackup(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 				return nil
 			}
 		}
-		return fmt.Errorf("cannot fetch bacukp file: %s", err)
+		return fmt.Errorf("cannot fetch backup file: %s", err)
 	}
 
 	gzipReader, err := gzip.NewReader(resp.Body)
@@ -317,84 +330,14 @@ func restoreBackup(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 	return nil
 }
 
-func main() {
-	instanceID := flag.String("instance", "",
-		"The instance ID of the cluster member. If not supplied, then the instance ID is determined from EC2 metadata")
-	clusterTagName := flag.String("tag", "aws:autoscaling:groupName",
-		"The instance tag that is common to all members of the cluster")
-
-	defaultBackupInterval := time.Minute
-	backupInterval := flag.Duration("backup-interval", defaultBackupInterval,
-		"How frequently to back up the etcd data to S3")
-	backupBucket := flag.String("backup-bucket", os.Getenv("ETCD_BACKUP_BUCKET"),
-		"The name of the S3 bucket where tha backup is stored. "+
-			"Environment variable: ETCD_BACKUP_BUCKET")
-	defaultBackupKey := "/etcd-backup.gz"
-	if d := os.Getenv("ETCD_BACKUP_KEY"); d != "" {
-		defaultBackupKey = d
-	}
-	backupKey := flag.String("backup-key", defaultBackupKey,
-		"The name of the S3 key where tha backup is stored. "+
-			"Environment variable: ETCD_BACKUP_KEY")
-
-	defaultDataDir := "/var/lib/etcd2"
-	if d := os.Getenv("ETCD_DATA_DIR"); d != "" {
-		defaultDataDir = d
-	}
-	dataDir := flag.String("data-dir", defaultDataDir,
-		"The path to the etcd2 data directory. "+
-			"Environment variable: ETCD_DATA_DIR")
-	flag.Parse()
-
-	var err error
-	*instanceID, err = ec2cluster.DiscoverInstanceID()
-	if err != nil {
-		log.Fatalf("ERROR: %s", err)
-	}
-
-	awsSession := session.New()
-	if region := os.Getenv("AWS_REGION"); region != "" {
-		awsSession.Config.WithRegion(region)
-	}
-	awsregion.GuessRegion(awsSession.Config)
-
-	s := &ec2cluster.Cluster{
-		AwsSession: awsSession,
-		InstanceID: *instanceID,
-		TagName:    *clusterTagName,
-	}
-
-	localInstance, err := s.Instance()
-	if err != nil {
-		log.Fatalf("ERROR: %s", err)
-	}
-
-	go func() {
-		etcdLocalURL = fmt.Sprintf("http://%s:2379", *localInstance.PrivateIpAddress)
-		for {
-			err := s.WatchLifecycleEvents(handleEvent)
-
-			// The lifecycle hook might not exist yet if we're being created
-			// by cloudformation.
-			if err == ec2cluster.ErrLifecycleHookNotFound {
-				log.Printf("WARNING: %s", err)
-				time.Sleep(10 * time.Second)
-				continue
-			}
-			if err != nil {
-				log.Fatalf("ERROR: WatchLifecycleEvents: %s", err)
-			}
-			panic("not reached")
-		}
-	}()
-
+func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialCluster []string, error) {
 	clusterInstances, err := s.Members()
 	if err != nil {
-		log.Fatalf("ERROR: List Members: %s", err)
+		return "", nil, fmt.Errorf("list members: %s", err)
 	}
 
-	initialClusterState := "new"
-	initialCluster := []string{}
+	initialClusterState = "new"
+	initialCluster = []string{}
 	for _, instance := range clusterInstances {
 		if instance.PrivateIpAddress == nil {
 			continue
@@ -446,6 +389,64 @@ func main() {
 				"application/json", bytes.NewReader(body))
 		}
 	}
+	return initialClusterState, initialCluster, nil
+}
+
+func main() {
+	instanceID := flag.String("instance", "",
+		"The instance ID of the cluster member. If not supplied, then the instance ID is determined from EC2 metadata")
+	clusterTagName := flag.String("tag", "aws:autoscaling:groupName",
+		"The instance tag that is common to all members of the cluster")
+
+	defaultBackupInterval := 5 * time.Minute
+	backupInterval := flag.Duration("backup-interval", defaultBackupInterval,
+		"How frequently to back up the etcd data to S3")
+	backupBucket := flag.String("backup-bucket", os.Getenv("ETCD_BACKUP_BUCKET"),
+		"The name of the S3 bucket where tha backup is stored. "+
+			"Environment variable: ETCD_BACKUP_BUCKET")
+	defaultBackupKey := "/etcd-backup.gz"
+	if d := os.Getenv("ETCD_BACKUP_KEY"); d != "" {
+		defaultBackupKey = d
+	}
+	backupKey := flag.String("backup-key", defaultBackupKey,
+		"The name of the S3 key where tha backup is stored. "+
+			"Environment variable: ETCD_BACKUP_KEY")
+
+	defaultDataDir := "/var/lib/etcd2"
+	if d := os.Getenv("ETCD_DATA_DIR"); d != "" {
+		defaultDataDir = d
+	}
+	dataDir := flag.String("data-dir", defaultDataDir,
+		"The path to the etcd2 data directory. "+
+			"Environment variable: ETCD_DATA_DIR")
+	flag.Parse()
+
+	var err error
+	if *instanceID == "" {
+		*instanceID, err = ec2cluster.DiscoverInstanceID()
+		if err != nil {
+			log.Fatalf("ERROR: %s", err)
+		}
+	}
+
+	awsSession := session.New()
+	if region := os.Getenv("AWS_REGION"); region != "" {
+		awsSession.Config.WithRegion(region)
+	}
+	awsregion.GuessRegion(awsSession.Config)
+
+	s := &ec2cluster.Cluster{
+		AwsSession: awsSession,
+		InstanceID: *instanceID,
+		TagName:    *clusterTagName,
+	}
+
+	localInstance, err := s.Instance()
+	if err != nil {
+		log.Fatalf("ERROR: %s", err)
+	}
+
+	initialClusterState, initialCluster, err := buildCluster(s)
 
 	// start the backup and restore goroutine.
 	shouldTryRestore := false
@@ -479,6 +480,27 @@ func main() {
 		}
 	}()
 
+	// watch for lifecycle events and remove nodes from the cluster as they are
+	// terminated.
+	go func() {
+		etcdLocalURL = fmt.Sprintf("http://%s:2379", *localInstance.PrivateIpAddress)
+		for {
+			err := s.WatchLifecycleEvents(handleLifecycleEvent)
+
+			// The lifecycle hook might not exist yet if we're being created
+			// by cloudformation.
+			if err == ec2cluster.ErrLifecycleHookNotFound {
+				log.Printf("WARNING: %s", err)
+				time.Sleep(10 * time.Second)
+				continue
+			}
+			if err != nil {
+				log.Fatalf("ERROR: WatchLifecycleEvents: %s", err)
+			}
+			panic("not reached")
+		}
+	}()
+
 	// Run the etcd command
 	cmd := exec.Command("etcd")
 	cmd.Stdout = os.Stdout
@@ -499,9 +521,9 @@ func main() {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("ETCD_INITIAL_CLUSTER_TOKEN=%s", *asg.AutoScalingGroupARN))
 	}
 	for _, env := range cmd.Env {
-		log.Printf("env %s", env)
+		log.Printf("%s", env)
 	}
 	if err := cmd.Run(); err != nil {
-		log.Fatalf("ERROR: %s", err)
+		log.Fatalf("%s", err)
 	}
 }

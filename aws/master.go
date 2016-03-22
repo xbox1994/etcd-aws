@@ -26,10 +26,10 @@ ExecStart=/usr/bin/docker run --name etcd-aws \
 ExecStop=-/usr/bin/docker rm -f etcd-aws
 `
 
-// CfnSignalReady is a systemd unit that emits a
-// cloudformation ready signal when etcd2.service
+// CfnSignal is a systemd unit that emits a
+// cloudformation ready signal when etcd-aws.service
 // is running.
-var CfnSignalReady = `[Unit]
+var CfnSignal = `[Unit]
 Description=Cloudformation Signal Ready
 After=etcd-aws.service
 Requires=etcd-aws.service
@@ -53,7 +53,7 @@ func indent(s, indent string) string {
 	return indent + strings.Replace(s, "\n", "\n"+indent, -1)
 }
 
-// MakeMaster creates a consul discovery master node
+// MakeMaster creates a cluster of etcd nodes.
 func MakeMaster(parameters *Parameters, t *cfn.Template) error {
 	t.Resources["MasterLaunchConfiguration"] = &cfn.Resource{
 		DependsOn: []string{"VpcInternetGatewayAttachment", "BackupBucket"},
@@ -80,22 +80,21 @@ func MakeMaster(parameters *Parameters, t *cfn.Template) error {
 				"      enable: true\n"+
 				"      content: |\n"+
 				indent(EtcdAwsService, "        ")+"\n"+
-				"    - name: cfn-signal-ready.service\n"+
+				"    - name: cfn-signal.service\n"+
 				"      command: start\n"+
 				"      enable: true\n"+
 				"      content: |\n"+
-				indent(CfnSignalReady, "        ")+"\n"+
+				indent(CfnSignal, "        ")+"\n"+
 				""))),
 		},
 	}
 
 	scale := 3
-
 	t.Resources["MasterAutoscale"] = &cfn.Resource{
 		UpdatePolicy: &cfn.UpdatePolicy{
 			AutoScalingRollingUpdate: &cfn.UpdatePolicyAutoScalingRollingUpdate{
 				MinInstancesInService: cfn.Integer(int64(scale)),
-				PauseTime:             cfn.String("PT15M"),
+				PauseTime:             cfn.String("PT5M"),
 				WaitOnResourceSignals: cfn.Bool(true),
 			},
 		},
@@ -135,57 +134,6 @@ func MakeMaster(parameters *Parameters, t *cfn.Template) error {
 			},
 		},
 	}
-
-	t.AddResource("MasterAutoscaleLifecycleHookQueue", cfn.SQSQueue{})
-
-	t.AddResource("MasterAutoscaleLifecycleHookRole", cfn.IAMRole{
-		AssumeRolePolicyDocument: PolicyDocument{
-			Version: "2012-10-17",
-			Statement: []Policy{
-				Policy{
-					Effect:    "Allow",
-					Principal: &Principal{Service: cfn.StringList(cfn.String("autoscaling.amazonaws.com"))},
-					Action:    cfn.StringList(cfn.String("sts:AssumeRole")),
-				},
-			},
-		},
-		Path: cfn.String("/"),
-		Policies: &cfn.IAMPoliciesList{
-			cfn.IAMPolicies{
-				PolicyName: cfn.String("MasterInstancePolicy"),
-				PolicyDocument: PolicyDocument{
-					Version: "2012-10-17",
-					Statement: []Policy{
-						Policy{
-							Sid:    "AllowSQSPublish",
-							Effect: "Allow",
-							Action: cfn.StringList(
-								cfn.String("sqs:SendMessage"),
-								cfn.String("sqs:GetQueueUrl"),
-							),
-							Resource: cfn.StringList(cfn.GetAtt("MasterAutoscaleLifecycleHookQueue", "Arn")),
-						},
-						Policy{
-							Sid:    "AllowSNSPublish",
-							Effect: "Allow",
-							Action: cfn.StringList(
-								cfn.String("sns:Publish"),
-							),
-							Resource: cfn.StringList(cfn.String("*")),
-						},
-					},
-				},
-			},
-		},
-	})
-
-	t.AddResource("MasterAutoscaleLifecycleHookTerminating", cfn.AutoScalingLifecycleHook{
-		AutoScalingGroupName:  cfn.Ref("MasterAutoscale").String(),
-		NotificationTargetARN: cfn.GetAtt("MasterAutoscaleLifecycleHookQueue", "Arn"),
-		RoleARN:               cfn.GetAtt("MasterAutoscaleLifecycleHookRole", "Arn"),
-		LifecycleTransition:   cfn.String("autoscaling:EC2_INSTANCE_TERMINATING"),
-		HeartbeatTimeout:      cfn.Integer(30),
-	})
 
 	t.AddResource("MasterSecurityGroup", cfn.EC2SecurityGroup{
 		GroupDescription: cfn.String(fmt.Sprintf("master-%s", parameters.DnsName)),
@@ -295,5 +243,55 @@ func MakeMaster(parameters *Parameters, t *cfn.Template) error {
 	})
 
 	t.AddResource("BackupBucket", &cfn.S3Bucket{})
+
+	t.AddResource("MasterAutoscaleLifecycleHookQueue", cfn.SQSQueue{})
+	t.AddResource("MasterAutoscaleLifecycleHookTerminating", cfn.AutoScalingLifecycleHook{
+		AutoScalingGroupName:  cfn.Ref("MasterAutoscale").String(),
+		NotificationTargetARN: cfn.GetAtt("MasterAutoscaleLifecycleHookQueue", "Arn"),
+		RoleARN:               cfn.GetAtt("MasterAutoscaleLifecycleHookRole", "Arn"),
+		LifecycleTransition:   cfn.String("autoscaling:EC2_INSTANCE_TERMINATING"),
+		HeartbeatTimeout:      cfn.Integer(30),
+	})
+	t.AddResource("MasterAutoscaleLifecycleHookRole", cfn.IAMRole{
+		AssumeRolePolicyDocument: PolicyDocument{
+			Version: "2012-10-17",
+			Statement: []Policy{
+				Policy{
+					Effect:    "Allow",
+					Principal: &Principal{Service: cfn.StringList(cfn.String("autoscaling.amazonaws.com"))},
+					Action:    cfn.StringList(cfn.String("sts:AssumeRole")),
+				},
+			},
+		},
+		Path: cfn.String("/"),
+		Policies: &cfn.IAMPoliciesList{
+			cfn.IAMPolicies{
+				PolicyName: cfn.String("MasterInstancePolicy"),
+				PolicyDocument: PolicyDocument{
+					Version: "2012-10-17",
+					Statement: []Policy{
+						Policy{
+							Sid:    "AllowSQSPublish",
+							Effect: "Allow",
+							Action: cfn.StringList(
+								cfn.String("sqs:SendMessage"),
+								cfn.String("sqs:GetQueueUrl"),
+							),
+							Resource: cfn.StringList(cfn.GetAtt("MasterAutoscaleLifecycleHookQueue", "Arn")),
+						},
+						Policy{
+							Sid:    "AllowSNSPublish",
+							Effect: "Allow",
+							Action: cfn.StringList(
+								cfn.String("sns:Publish"),
+							),
+							Resource: cfn.StringList(cfn.String("*")),
+						},
+					},
+				},
+			},
+		},
+	})
+
 	return nil
 }

@@ -6,7 +6,9 @@ import (
 	cfn "github.com/crewjam/go-cloudformation"
 )
 
-// MakeHealthCheck creates resources that monitor the health of the cluster
+// MakeHealthCheck creates CloudWatch alarms that monitor the health of the cluster.
+// Notifications go to the HealthTopic. You should subscribe manually to this topic
+// if you care about the health of the cluster.
 func MakeHealthCheck(parameters *Parameters, t *cfn.Template) error {
 	t.AddResource("HealthTopic", cfn.SNSTopic{
 		DisplayName: cfn.String(fmt.Sprintf("cloudwatch notifications for %s", parameters.DnsName)),

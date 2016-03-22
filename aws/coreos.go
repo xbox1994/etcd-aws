@@ -5,6 +5,7 @@ import (
 	"net/http"
 )
 
+// InstanceType2Arch maps EC2 instance types to their virtualization type
 var InstanceType2Arch = map[string]string{
 	"t1.micro":    "pv",
 	"t2.micro":    "hvm",
@@ -49,6 +50,8 @@ var InstanceType2Arch = map[string]string{
 	"cc2.8xlarge": "hvm",
 }
 
+// GetCoreOSAMI assigns `parameters.MasterAMI` based on the specified region and
+// instance type.
 func GetCoreOSAMI(parameters *Parameters) error {
 	resp, err := http.Get("https://coreos.com/dist/aws/aws-stable.json")
 	if err != nil {
