@@ -58,15 +58,14 @@ func MakeMaster(parameters *Parameters, t *cfn.Template) error {
 	t.Resources["MasterLaunchConfiguration"] = &cfn.Resource{
 		DependsOn: []string{"VpcInternetGatewayAttachment", "BackupBucket"},
 		Properties: cfn.AutoScalingLaunchConfiguration{
-			ImageId:                  cfn.String(parameters.MasterAMI),
-			InstanceType:             cfn.String(parameters.MasterInstanceType),
+			ImageId:                  AMI,
+			InstanceType:             cfn.Ref("InstanceType").String(),
 			IamInstanceProfile:       cfn.Ref("MasterInstanceProfile").String(),
-			KeyName:                  cfn.String(parameters.KeyPair),
+			KeyName:                  cfn.Ref("KeyPair").String(),
 			SecurityGroups:           cfn.StringList(cfn.Ref("MasterSecurityGroup")),
 			AssociatePublicIpAddress: cfn.Bool(true),
 			UserData: cfn.Base64(cfn.Join("", cfn.String(""+
 				"#cloud-config\n"+
-				"\n"+
 				"\n"+
 				"write_files:\n"+
 				"  - path: \"/etc/etcd_aws.env\"\n"+
@@ -105,7 +104,10 @@ func MakeMaster(parameters *Parameters, t *cfn.Template) error {
 			},
 		},
 		Properties: cfn.AutoScalingAutoScalingGroup{
-			AvailabilityZones:       cfn.StringList(parameters.AvailabilityZones...),
+			AvailabilityZones: cfn.StringList(
+				cfn.FindInMap("AvailablityZones", cfn.Ref("AWS::Region"), cfn.String("0")),
+				cfn.FindInMap("AvailablityZones", cfn.Ref("AWS::Region"), cfn.String("1")),
+				cfn.FindInMap("AvailablityZones", cfn.Ref("AWS::Region"), cfn.String("2"))),
 			Cooldown:                cfn.String("300"),
 			DesiredCapacity:         cfn.String(strconv.Itoa(scale)),
 			MaxSize:                 cfn.String(strconv.Itoa(2 * scale)),
@@ -123,7 +125,7 @@ func MakeMaster(parameters *Parameters, t *cfn.Template) error {
 				},
 				cfn.AutoScalingTags{
 					Key:               cfn.String("application"),
-					Value:             cfn.String(parameters.Application),
+					Value:             cfn.Ref("Application").String(),
 					PropagateAtLaunch: cfn.Bool(true),
 				},
 				cfn.AutoScalingTags{

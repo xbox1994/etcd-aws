@@ -2,6 +2,7 @@ package aws
 
 import (
 	"fmt"
+	"strconv"
 
 	cfn "github.com/crewjam/go-cloudformation"
 )
@@ -14,7 +15,7 @@ func MakeVPC(parameters *Parameters, t *cfn.Template) error {
 		EnableDnsSupport:   cfn.Bool(true),
 		EnableDnsHostnames: cfn.Bool(true),
 		Tags: []cfn.ResourceTag{
-			cfn.ResourceTag{Key: cfn.String("application"), Value: cfn.String(parameters.Application)},
+			cfn.ResourceTag{Key: cfn.String("application"), Value: cfn.Ref("Application").String()},
 			cfn.ResourceTag{Key: cfn.String("Name"), Value: cfn.String(parameters.DnsName)},
 		},
 	})
@@ -26,13 +27,13 @@ func MakeVPC(parameters *Parameters, t *cfn.Template) error {
 		"10.0.192.0/18",
 	}
 
-	for index, availabilityZone := range parameters.AvailabilityZones {
+	for index := 0; index < 3; index++ {
 		t.AddResource(fmt.Sprintf("VpcSubnet%d", index), cfn.EC2Subnet{
 			CidrBlock:        cfn.String(cidrBlocks[index]),
-			AvailabilityZone: availabilityZone.String(),
+			AvailabilityZone: cfn.FindInMap("AvailablityZones", cfn.Ref("AWS::Region"), cfn.String(strconv.Itoa(index))),
 			VpcId:            cfn.Ref("Vpc"),
 			Tags: []cfn.ResourceTag{
-				cfn.ResourceTag{Key: cfn.String("application"), Value: cfn.String(parameters.Application)},
+				cfn.ResourceTag{Key: cfn.String("application"), Value: cfn.Ref("Application").String()},
 				cfn.ResourceTag{Key: cfn.String("Name"), Value: cfn.String(fmt.Sprintf("%s-%d", parameters.DnsName, index))},
 			},
 		})
@@ -51,7 +52,7 @@ func MakeVPC(parameters *Parameters, t *cfn.Template) error {
 
 	t.AddResource("VpcInternetGateway", cfn.EC2InternetGateway{
 		Tags: []cfn.ResourceTag{
-			cfn.ResourceTag{Key: cfn.String("application"), Value: cfn.String(parameters.Application)},
+			cfn.ResourceTag{Key: cfn.String("application"), Value: cfn.Ref("Application").String()},
 			cfn.ResourceTag{Key: cfn.String("Name"), Value: cfn.String(fmt.Sprintf("InternetGateway-%s", parameters.DnsName))},
 		},
 	})
