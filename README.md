@@ -3,16 +3,31 @@
 
 This repository contains tools for building a robust etcd cluster in AWS.
 
-It uses cloudformation to establish a three node autoscaling group of etcd instances. In case of the failure of a single node, the cluster remains available and the replacement nodes are integrated automatically into the cluster. Each node in the cluster can be replaced by a new node, one at a time, and the cluster remains available. In the event of failure of all nodes simultaneously, the cluster recovers, albiet with interruption in service, from the backup stored in S3.
+It uses CloudFormation to establish a three node autoscaling group of etcd instances. In case of the failure of a single node, the cluster remains available and the replacement nodes are integrated automatically into the cluster. Each node in the cluster can be replaced by a new node, one at a time, and the cluster remains available. In the event of failure of all nodes simultaneously, the cluster recovers from the backup stored in S3 without intervention.
 
-# cloudformation
+Please see [this blog post](https://crewjam.com/etcd-aws) for more on how this little utility came to be.
 
-The program `etcd-aws-cfn` generates and deploys a cloudformation template:
+Invoking the `etcd-aws` program will configure and launch etcd based on the 
+current autoscaling group:
+
+    etcd-aws
+
+It is also available as a Docker container:
+
+    /usr/bin/docker run --name etcd-aws \
+      -p 2379:2379 -p 2380:2380 \
+      -v /var/lib/etcd2:/var/lib/etcd2 \
+      -e ETCD_BACKUP_BUCKET=my-etcd-backups \
+      --rm crewjam/etcd-aws
+
+# CloudFormation
+
+The program `etcd-aws-cfn` generates and deploys a CloudFormation template:
 
     go install ./...
     etcd-aws-cfn -key-pair my-key
 
-You can also generate the cloudformation and deploy it yourself:
+You can also generate the CloudFormation template and deploy it yourself:
 
     etcd-aws-cfn -key-pair my-key -dry-run > etcd.template
 
@@ -22,7 +37,7 @@ The template consists of:
 - An autoscaling group of CoreOS instances running etcd with an initial size of 3.
 - An internal load balancer that routes etcd client requests to the autoscaling group.
 - A lifecycle hook that monitors the autoscaling group and sends termination events to an SQS queue.
-- An S3 bucket that stores the backup
+- An S3 bucket that stores the backup.
 - CloudWatch alarms that monitor the health of the cluster and that the backup is happening.
 
 # Cluster Discovery
