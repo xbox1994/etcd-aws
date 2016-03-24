@@ -41,7 +41,7 @@ func Main() error {
 		parameters["InstanceType"] = *instanceType
 	}
 
-	templateParameters := Parameters{
+	templateParameters := etcdaws.Parameters{
 		DnsName: *dnsName,
 	}
 	template, err := etcdaws.MakeTemplate(awsSession, &templateParameters)
