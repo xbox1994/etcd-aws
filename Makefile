@@ -19,17 +19,17 @@ dist/cacert.pem:
 
 dist/etcd.Linux.x86_64:
 	[ -d dist ] || mkdir dist
-	curl -L -s https://github.com/coreos/etcd/releases/download/v2.3.0/etcd-v2.3.0-linux-amd64.tar.gz |\
+	curl -L -s https://github.com/coreos/etcd/releases/download/v2.3.2/etcd-v2.3.2-linux-amd64.tar.gz |\
 		tar -C dist -xzf -
-	cp dist/etcd-v2.3.0-linux-amd64/etcd dist/etcd.Linux.x86_64
-	rm -rf dist/etcd-v2.3.0-linux-amd64
+	cp dist/etcd-v2.3.2-linux-amd64/etcd dist/etcd.Linux.x86_64
+	rm -rf dist/etcd-v2.3.2-linux-amd64
 
 dist/etcd-aws.Linux.x86_64: $(SOURCES)
 	[ -d dist ] || mkdir dist
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags '-s' \
 	  -o $@ ./etcd-aws.go ./backup.go ./lifecycle.go
 
-container: dist/cacert.pem dist/etcd-aws.Linux.x86_64 dist/etcdctl.Linux.x86_64 dist/etcd.Linux.x86_64
+container: dist/cacert.pem dist/etcd-aws.Linux.x86_64 dist/etcd.Linux.x86_64
 	docker build -t $(IMAGE_NAME) .
 
 check:
