@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"strconv"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -124,6 +125,14 @@ func main() {
 		"The instance tag that is common to all members of the cluster")
 
 	defaultBackupInterval := 5 * time.Minute
+	if d := os.Getenv("ETCD_BACKUP_INTERVAL"); d != "" {
+		interval, err := strconv.Atoi(d)
+		if err != nil {
+			log.Fatalf("ERROR: %s", err)
+		}
+		defaultBackupInterval = time.Duration(interval) * time.Second
+	}
+
 	backupInterval := flag.Duration("backup-interval", defaultBackupInterval,
 		"How frequently to back up the etcd data to S3")
 	backupBucket := flag.String("backup-bucket", os.Getenv("ETCD_BACKUP_BUCKET"),
