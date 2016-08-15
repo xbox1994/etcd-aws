@@ -124,6 +124,14 @@ func main() {
 		"The instance tag that is common to all members of the cluster")
 
 	defaultBackupInterval := 5 * time.Minute
+	if d := os.Getenv("ETCD_BACKUP_INTERVAL"); d != "" {
+		var err error
+		defaultBackupInterval, err = time.ParseDuration(d)
+		if err != nil {
+			log.Fatalf("ERROR: %s", err)
+		}
+	}
+
 	backupInterval := flag.Duration("backup-interval", defaultBackupInterval,
 		"How frequently to back up the etcd data to S3")
 	backupBucket := flag.String("backup-bucket", os.Getenv("ETCD_BACKUP_BUCKET"),
