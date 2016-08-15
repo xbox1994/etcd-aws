@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"strconv"
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -126,11 +125,11 @@ func main() {
 
 	defaultBackupInterval := 5 * time.Minute
 	if d := os.Getenv("ETCD_BACKUP_INTERVAL"); d != "" {
-		interval, err := strconv.Atoi(d)
+		var err error
+		defaultBackupInterval, err = time.ParseDuration(d)
 		if err != nil {
 			log.Fatalf("ERROR: %s", err)
 		}
-		defaultBackupInterval = time.Duration(interval) * time.Second
 	}
 
 	backupInterval := flag.Duration("backup-interval", defaultBackupInterval,
