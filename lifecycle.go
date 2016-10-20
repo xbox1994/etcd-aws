@@ -8,7 +8,7 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/crewjam/ec2cluster"
+	"github.com/opsline/ec2cluster"
 )
 
 // handleLifecycleEvent is invoked whenever we get a lifecycle terminate message. It removes

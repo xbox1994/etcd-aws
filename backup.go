@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/coreos/go-etcd/etcd"
-	"github.com/crewjam/ec2cluster"
+	"github.com/opsline/ec2cluster"
 )
 
 // backupService invokes backupOnce() periodically if the current node is the cluster leader.

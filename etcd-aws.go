@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/crewjam/awsregion"
-	"github.com/crewjam/ec2cluster"
+	"github.com/opsline/ec2cluster"
 )
 
 type etcdState struct {
@@ -152,7 +152,43 @@ func main() {
 	dataDir := flag.String("data-dir", defaultDataDir,
 		"The path to the etcd2 data directory. "+
 			"Environment variable: ETCD_DATA_DIR")
+
+	etcdCertFile := flag.String("etcd-cert-file", os.Getenv("ETCD_CERT_FILE"),
+		"Path to the client server TLS cert file. "+
+			"Environment variable: ETCD_CERT_FILE")
+	etcdKeyFile := flag.String("etcd-cert-file", os.Getenv("ETCD_KEY_FILE"),
+		"Path to the client server TLS key file. "+
+			"Environment variable: ETCD_KEY_FILE")
+	etcdClientCertAuth := flag.String("etcd-client-cert-auth", os.Getenv("ETCD_CLIENT_CERT_AUTH"),
+		"Enable client cert authentication. "+
+			"Environment variable: ETCD_CLIENT_CERT_AUTH")
+	etcdTrustedCaFile := flag.String("etcd-trusted-ca-file", os.Getenv("ETCD_TRUSTED_CA_FILE"),
+		"Path to the client server TLS trusted CA key file. "+
+			"Environment variable: ETCD_TRUSTED_CA_FILE")
+
+	etcdPeerCertFile := flag.String("etcd-peer-cert-file", os.Getenv("ETCD_PEER_CERT_FILE"),
+		"Path to the peer server TLS cert file. "+
+			"Environment variable: ETCD_PEER_CERT_FILE")
+	etcdPeerKeyFile := flag.String("etcd-peer-cert-file", os.Getenv("ETCD_PEER_KEY_FILE"),
+		"Path to the peer server TLS key file. "+
+			"Environment variable: ETCD_PEER_KEY_FILE")
+	etcdPeerClientCertAuth := flag.String("etcd-peer-client-cert-auth", os.Getenv("ETCD_PEER_CLIENT_CERT_AUTH"),
+		"Enable peer client cert authentication. "+
+			"Environment variable: ETCD_PEER_CLIENT_CERT_AUTH")
+	etcdPeerTrustedCaFile := flag.String("etcd-peer-trusted-ca-file", os.Getenv("ETCD_PEER_TRUSTED_CA_FILE"),
+		"Path to the peer client server TLS trusted CA key file. "+
+			"Environment variable: ETCD_PEER_TRUSTED_CA_FILE")
+
 	flag.Parse()
+
+	clientTlsEnabled := false
+	if *etcdCertFile != "" {
+		clientTlsEnabled = true
+	}
+	peerTlsEnabled := false
+	if *etcdPeerCertFile != "" {
+		peerTlsEnabled = true
+	}
 
 	var err error
 	if *instanceID == "" {
@@ -231,6 +267,14 @@ func main() {
 		fmt.Sprintf("ETCD_INITIAL_CLUSTER_STATE=%s", initialClusterState),
 		fmt.Sprintf("ETCD_INITIAL_CLUSTER=%s", strings.Join(initialCluster, ",")),
 		fmt.Sprintf("ETCD_INITIAL_ADVERTISE_PEER_URLS=http://%s:2380", *localInstance.PrivateIpAddress),
+		fmt.Sprintf("ETCD_CERT_FILE=%s", *etcdCertFile),
+		fmt.Sprintf("ETCD_KEY_FILE=%s", *etcdKeyFile),
+		fmt.Sprintf("ETCD_CLIENT_CERT_AUTH=%s", *etcdClientCertAuth),
+		fmt.Sprintf("ETCD_TRUSTED_CA_FILE=%s", *etcdTrustedCaFile),
+		fmt.Sprintf("ETCD_PEER_CERT_FILE=%s", *etcdPeerCertFile),
+		fmt.Sprintf("ETCD_PEER_KEY_FILE=%s", *etcdPeerKeyFile),
+		fmt.Sprintf("ETCD_PEER_CLIENT_CERT_AUTH=%s", *etcdPeerClientCertAuth),
+		fmt.Sprintf("ETCD_PEER_TRUSTED_CA_FILE=%s", *etcdPeerTrustedCaFile),
 	}
 	asg, _ := s.AutoscalingGroup()
 	if asg != nil {
