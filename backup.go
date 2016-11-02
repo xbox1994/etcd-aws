@@ -30,22 +30,22 @@ func backupService(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 	for {
 		<-ticker
 
-		resp, err := http.Get(fmt.Sprintf("http://%s:2379/v2/stats/self", *instance.PrivateIpAddress))
+		resp, err := http.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", *instance.PrivateIpAddress, *clientProtocol))
 		if err != nil {
-			return fmt.Errorf("%s: http://%s:2379/v2/stats/self: %s", *instance.InstanceId,
+			return fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, *clientProtocol,
 				*instance.PrivateIpAddress, err)
 		}
 
 		nodeState := etcdState{}
 		if err := json.NewDecoder(resp.Body).Decode(&nodeState); err != nil {
-			return fmt.Errorf("%s: http://%s:2379/v2/stats/self: %s", *instance.InstanceId,
+			return fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, *clientProtocol,
 				*instance.PrivateIpAddress, err)
 		}
 
 		// if the cluster has a leader other than the current node, then don't do the
 		// backup.
 		if nodeState.LeaderInfo.Leader != "" && nodeState.ID != nodeState.LeaderInfo.Leader {
-			log.Printf("backup: %s: http://%s:2379/v2/stats/self: not the leader", *instance.InstanceId,
+			log.Printf("backup: %s: %s://%s:2379/v2/stats/self: not the leader", *instance.InstanceId, *clientProtocol,
 				*instance.PrivateIpAddress)
 			<-ticker
 			continue
@@ -114,7 +114,15 @@ func backupOnce(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir string) 
 	if err != nil {
 		return err
 	}
-	etcdClient := etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *instance.PrivateIpAddress)})
+	if clientTlsEnabled {
+		etcdClient, err := etcd.NewTLSClient([]string{fmt.Sprintf("https://%s:2379", *instance.PrivateIpAddress)},
+			*etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
+		if err != nil {
+			log.Fatalf("ERROR: %s", err)
+		}
+	} else {
+		etcdClient := etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *instance.PrivateIpAddress)})
+	}
 	if success := etcdClient.SyncCluster(); !success {
 		return fmt.Errorf("backupOnce: cannot sync machines")
 	}
@@ -218,7 +226,15 @@ func restoreBackup(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 	if err != nil {
 		return err
 	}
-	etcdClient := etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *instance.PrivateIpAddress)})
+	if clientTlsEnabled {
+		etcdClient, err := etcd.NewTLSClient([]string{fmt.Sprintf("https://%s:2379", *instance.PrivateIpAddress)},
+			*etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
+		if err != nil {
+			log.Fatalf("ERROR: %s", err)
+		}
+	} else {
+		etcdClient := etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *instance.PrivateIpAddress)})
+	}
 	if success := etcdClient.SyncCluster(); !success {
 		return fmt.Errorf("restore: cannot sync machines")
 	}

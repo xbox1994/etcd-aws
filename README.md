@@ -18,7 +18,7 @@ It is also available as a Docker container:
       -p 2379:2379 -p 2380:2380 \
       -v /var/lib/etcd2:/var/lib/etcd2 \
       -e ETCD_BACKUP_BUCKET=my-etcd-backups \
-      --rm crewjam/etcd-aws
+      --rm opsline/etcd-aws
 
 # CloudFormation
 

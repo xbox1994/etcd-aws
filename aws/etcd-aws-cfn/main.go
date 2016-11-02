@@ -10,7 +10,7 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/crewjam/awsregion"
-	etcdaws "github.com/crewjam/etcd-aws/aws"
+	etcdaws "github.com/opsline/etcd-aws/aws"
 	"github.com/crewjam/go-cloudformation/deploycfn"
 )
 

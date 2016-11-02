@@ -49,8 +49,11 @@ type etcdMember struct {
 }
 
 var etcdLocalURL string
+var peerProtocol string                                                                                                                  
+var clientProtocol string                                                                                                                  
 
 func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialCluster []string, err error) {
+
 	localInstance, err := s.Instance()
 	if err != nil {
 		return "", nil, err
@@ -69,8 +72,8 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 		}
 
 		// add this instance to the initialCluster expression
-		initialCluster = append(initialCluster, fmt.Sprintf("%s=http://%s:2380",
-			*instance.InstanceId, *instance.PrivateIpAddress))
+		initialCluster = append(initialCluster, fmt.Sprintf("%s=%s://%s:2380",
+			*instance.InstanceId, *peerProtocol, *instance.PrivateIpAddress))
 
 		// skip the local node, since we know it is not running yet
 		if *instance.InstanceId == *localInstance.InstanceId {
@@ -78,26 +81,26 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 		}
 
 		// fetch the state of the node.
-		resp, err := http.Get(fmt.Sprintf("http://%s:2379/v2/stats/self", *instance.PrivateIpAddress))
+		resp, err := http.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", *clientProtocol, *instance.PrivateIpAddress))
 		if err != nil {
-			log.Printf("%s: http://%s:2379/v2/stats/self: %s", *instance.InstanceId,
+			log.Printf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, *clientProtocol,
 				*instance.PrivateIpAddress, err)
 			continue
 		}
 		nodeState := etcdState{}
 		if err := json.NewDecoder(resp.Body).Decode(&nodeState); err != nil {
-			log.Printf("%s: http://%s:2379/v2/stats/self: %s", *instance.InstanceId,
+			log.Printf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, *clientProtocol,
 				*instance.PrivateIpAddress, err)
 			continue
 		}
 
 		if nodeState.LeaderInfo.Leader == "" {
-			log.Printf("%s: http://%s:2379/v2/stats/self: alive, no leader", *instance.InstanceId,
+			log.Printf("%s: %s://%s:2379/v2/stats/self: alive, no leader", *instance.InstanceId, *clientProtocol,
 				*instance.PrivateIpAddress)
 			continue
 		}
 
-		log.Printf("%s: http://%s:2379/v2/stats/self: has leader %s", *instance.InstanceId,
+		log.Printf("%s: %s://%s:2379/v2/stats/self: has leader %s", *instance.InstanceId, *clientProtocol,
 			*instance.PrivateIpAddress, nodeState.LeaderInfo.Leader)
 		if initialClusterState != "existing" {
 			initialClusterState = "existing"
@@ -107,10 +110,10 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 			log.Printf("joining cluster via %s", *instance.InstanceId)
 			m := etcdMember{
 				Name:     *localInstance.InstanceId,
-				PeerURLs: []string{fmt.Sprintf("http://%s:2380", *localInstance.PrivateIpAddress)},
+				PeerURLs: []string{fmt.Sprintf("%s://%s:2380", *peerProtocol, *localInstance.PrivateIpAddress)},
 			}
 			body, _ := json.Marshal(m)
-			http.Post(fmt.Sprintf("http://%s:2379/v2/members", *instance.PrivateIpAddress),
+			http.Post(fmt.Sprintf("%s://%s:2379/v2/members", *clientProtocol, *instance.PrivateIpAddress),
 				"application/json", bytes.NewReader(body))
 		}
 	}
@@ -156,7 +159,7 @@ func main() {
 	etcdCertFile := flag.String("etcd-cert-file", os.Getenv("ETCD_CERT_FILE"),
 		"Path to the client server TLS cert file. "+
 			"Environment variable: ETCD_CERT_FILE")
-	etcdKeyFile := flag.String("etcd-cert-file", os.Getenv("ETCD_KEY_FILE"),
+	etcdKeyFile := flag.String("etcd-key-file", os.Getenv("ETCD_KEY_FILE"),
 		"Path to the client server TLS key file. "+
 			"Environment variable: ETCD_KEY_FILE")
 	etcdClientCertAuth := flag.String("etcd-client-cert-auth", os.Getenv("ETCD_CLIENT_CERT_AUTH"),
@@ -169,7 +172,7 @@ func main() {
 	etcdPeerCertFile := flag.String("etcd-peer-cert-file", os.Getenv("ETCD_PEER_CERT_FILE"),
 		"Path to the peer server TLS cert file. "+
 			"Environment variable: ETCD_PEER_CERT_FILE")
-	etcdPeerKeyFile := flag.String("etcd-peer-cert-file", os.Getenv("ETCD_PEER_KEY_FILE"),
+	etcdPeerKeyFile := flag.String("etcd-peer-key-file", os.Getenv("ETCD_PEER_KEY_FILE"),
 		"Path to the peer server TLS key file. "+
 			"Environment variable: ETCD_PEER_KEY_FILE")
 	etcdPeerClientCertAuth := flag.String("etcd-peer-client-cert-auth", os.Getenv("ETCD_PEER_CLIENT_CERT_AUTH"),
@@ -182,12 +185,16 @@ func main() {
 	flag.Parse()
 
 	clientTlsEnabled := false
+	clientProtocol = "http"
 	if *etcdCertFile != "" {
 		clientTlsEnabled = true
+		clientProtcol = "https"
 	}
 	peerTlsEnabled := false
+	peerProtocol = "http"
 	if *etcdPeerCertFile != "" {
 		peerTlsEnabled = true
+		peerProtocol = "https"
 	}
 
 	var err error
@@ -230,8 +237,15 @@ func main() {
 	go func() {
 		// wait for etcd to start
 		for {
-			etcdClient := etcd.NewClient([]string{fmt.Sprintf("http://%s:2379",
-				*localInstance.PrivateIpAddress)})
+			if clientTlsEnabled {
+				etcdClient, err := etcd.NewTLSClient([]string{fmt.Sprintf("https://%s:2379", *localInstance.PrivateIpAddress)},
+					*etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
+				if err != nil {
+					log.Fatalf("ERROR: %s", err)
+				}
+			} else {
+				etcdClient := etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *localInstance.PrivateIpAddress)})
+			}
 			if success := etcdClient.SyncCluster(); success {
 				break
 			}
