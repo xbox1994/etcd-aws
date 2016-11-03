@@ -52,7 +52,7 @@ func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, 
 }
 
 func watchLifecycleEvents(s *ec2cluster.Cluster, localInstance *ec2.Instance) {
-	etcdLocalURL = fmt.Sprintf("%s://%s:2379", *clientProtocol, *localInstance.PrivateIpAddress)
+	etcdLocalURL = fmt.Sprintf("%s://%s:2379", clientProtocol, *localInstance.PrivateIpAddress)
 	for {
 		err := s.WatchLifecycleEvents(handleLifecycleEvent)
 

@@ -4,7 +4,8 @@ GO_SOURCES=$(shell find . -name \*.go)
 SOURCES=$(GO_SOURCES)
 PLATFORM_BINARIES=dist/etcd-aws.Linux.x86_64
 
-IMAGE_NAME=opsline/etcd-aws
+IMAGE_VERSION=1.0.0
+IMAGE_NAME="opsline/etcd-aws:${IMAGE_VERSION}"
 GITHUB_USER=opsline
 GITHUB_REPOSITORY=etcd-aws
 
