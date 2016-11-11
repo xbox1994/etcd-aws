@@ -50,7 +50,7 @@ type etcdMember struct {
 
 var etcdLocalURL string
 var peerProtocol string                                                                                                                  
-var clientProtocol string       
+var clientProtocol string
 var etcdCertFile *string
 var etcdKeyFile *string
 var etcdTrustedCaFile *string
@@ -185,6 +185,13 @@ func main() {
 	etcdPeerTrustedCaFile := flag.String("etcd-peer-trusted-ca-file", os.Getenv("ETCD_PEER_TRUSTED_CA_FILE"),
 		"Path to the peer client server TLS trusted CA key file. "+
 			"Environment variable: ETCD_PEER_TRUSTED_CA_FILE")
+	etcdHeartbeatInterval := flag.String("etcd-heartbeat-interval", os.Getenv("ETCD_HEARTBEAT_INTERVAL"),
+		"Time (in milliseconds) of a heartbeat interval. "+
+			"Environment variable: ETCD_HEARTBEAT_INTERVAL")
+	etcdElectionTimeout := flag.String("etcd-election-timeout", os.Getenv("ETCD_ELECTION_TIMEOUT"),
+		"Time (in milliseconds) for an election to timeout. "+
+			"Environment variable: ETCD_ELECTION_TIMEOUT")
+
 
 	flag.Parse()
 
@@ -277,13 +284,12 @@ func main() {
 	cmd.Env = []string{
 		fmt.Sprintf("ETCD_NAME=%s", *localInstance.InstanceId),
 		fmt.Sprintf("ETCD_DATA_DIR=/var/lib/etcd2"),
-		fmt.Sprintf("ETCD_ELECTION_TIMEOUT=1200"),
-		fmt.Sprintf("ETCD_ADVERTISE_CLIENT_URLS=http://%s:2379", *localInstance.PrivateIpAddress),
-		fmt.Sprintf("ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379"),
-		fmt.Sprintf("ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380"),
+		fmt.Sprintf("ETCD_ADVERTISE_CLIENT_URLS=%s://%s:2379", clientProtocol, *localInstance.PrivateIpAddress),
+		fmt.Sprintf("ETCD_LISTEN_CLIENT_URLS=%s://0.0.0.0:2379", clientProtocol),
+		fmt.Sprintf("ETCD_LISTEN_PEER_URLS=%s://0.0.0.0:2380", peerProtocol),
 		fmt.Sprintf("ETCD_INITIAL_CLUSTER_STATE=%s", initialClusterState),
 		fmt.Sprintf("ETCD_INITIAL_CLUSTER=%s", strings.Join(initialCluster, ",")),
-		fmt.Sprintf("ETCD_INITIAL_ADVERTISE_PEER_URLS=http://%s:2380", *localInstance.PrivateIpAddress),
+		fmt.Sprintf("ETCD_INITIAL_ADVERTISE_PEER_URLS=%s://%s:2380", peerProtocol, *localInstance.PrivateIpAddress),
 		fmt.Sprintf("ETCD_CERT_FILE=%s", *etcdCertFile),
 		fmt.Sprintf("ETCD_KEY_FILE=%s", *etcdKeyFile),
 		fmt.Sprintf("ETCD_CLIENT_CERT_AUTH=%s", *etcdClientCertAuth),
@@ -292,6 +298,8 @@ func main() {
 		fmt.Sprintf("ETCD_PEER_KEY_FILE=%s", *etcdPeerKeyFile),
 		fmt.Sprintf("ETCD_PEER_CLIENT_CERT_AUTH=%s", *etcdPeerClientCertAuth),
 		fmt.Sprintf("ETCD_PEER_TRUSTED_CA_FILE=%s", *etcdPeerTrustedCaFile),
+		fmt.Sprintf("ETCD_HEARTBEAT_INTERVAL=%s", *etcdHeartbeatInterval),
+		fmt.Sprintf("ETCD_ELECTION_TIMEOUT=%s", *etcdElectionTimeout),
 	}
 	asg, _ := s.AutoscalingGroup()
 	if asg != nil {
