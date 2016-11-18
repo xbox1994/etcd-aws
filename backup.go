@@ -2,9 +2,12 @@ package main
 
 import (
 	"compress/gzip"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"time"
 
@@ -30,10 +33,42 @@ func backupService(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 	for {
 		<-ticker
 
-		resp, err := http.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", *instance.PrivateIpAddress, clientProtocol))
-		if err != nil {
-			return fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, err)
+		var resp *http.Response
+		if clientTlsEnabled {
+			// Load client cert
+			cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
+			if err != nil {
+				return fmt.Errorf("ERROR: %s", err)
+			}
+
+			// Load CA cert
+			caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
+			if err != nil {
+				return fmt.Errorf("ERROR: %s", err)
+			}
+			caCertPool := x509.NewCertPool()
+			caCertPool.AppendCertsFromPEM(caCert)
+
+			// Setup HTTPS client
+			tlsConfig := &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				RootCAs:      caCertPool,
+			}
+			tlsConfig.BuildNameToCertificate()
+			transport := &http.Transport{TLSClientConfig: tlsConfig}
+			client := &http.Client{Transport: transport}
+
+			resp, err = client.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", clientProtocol, *instance.PrivateIpAddress))
+			if err != nil {
+				return fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
+					*instance.PrivateIpAddress, err)
+			}
+		} else {
+			resp, err = http.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", clientProtocol, *instance.PrivateIpAddress))
+			if err != nil {
+				return fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
+					*instance.PrivateIpAddress, err)
+			}
 		}
 
 		nodeState := etcdState{}
@@ -154,10 +189,10 @@ func backupOnce(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir string) 
 		ACL:                  aws.String(s3.ObjectCannedACLPrivate),
 	})
 	if err != nil {
-		return fmt.Errorf("upload s3://%s%s: %s", backupBucket, backupKey, err)
+		return fmt.Errorf("upload s3://%s/%s: %s", backupBucket, backupKey, err)
 	}
 
-	log.Printf("backup written to s3://%s%s (%d values)", backupBucket, backupKey,
+	log.Printf("backup written to s3://%s/%s (%d values)", backupBucket, backupKey,
 		valueCount)
 
 	cloudwatch.New(s.AwsSession).PutMetricData(&cloudwatch.PutMetricDataInput{

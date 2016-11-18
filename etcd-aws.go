@@ -49,12 +49,12 @@ type etcdMember struct {
 }
 
 var etcdLocalURL string
-var peerProtocol string                                                                                                                  
+var peerProtocol string
 var clientProtocol string
 var etcdCertFile *string
 var etcdKeyFile *string
 var etcdTrustedCaFile *string
-var clientTlsEnabled bool                                                                                                           
+var clientTlsEnabled bool
 
 func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialCluster []string, err error) {
 
@@ -191,7 +191,6 @@ func main() {
 	etcdElectionTimeout := flag.String("etcd-election-timeout", os.Getenv("ETCD_ELECTION_TIMEOUT"),
 		"Time (in milliseconds) for an election to timeout. "+
 			"Environment variable: ETCD_ELECTION_TIMEOUT")
-
 
 	flag.Parse()
 
