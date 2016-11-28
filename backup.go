@@ -29,24 +29,25 @@ func backupService(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 	ticker := time.Tick(interval)
 	for {
 		<-ticker
-
-		resp, err := get_api_resp(*instance.PrivateIpAddress, *instance.InstanceId)
+		path := "stats/self"
+		method := http.MethodGet
+		resp, err := getApiResponse(*instance.PrivateIpAddress, *instance.InstanceId, path, method)
 		if err != nil {
-			return fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, err)
+			return fmt.Errorf("%s: %s://%s:2379/v2/%s: %s", *instance.InstanceId, clientProtocol,
+				*instance.PrivateIpAddress, path, err)
 		}
 
 		nodeState := etcdState{}
 		if err := json.NewDecoder(resp.Body).Decode(&nodeState); err != nil {
-			return fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, err)
+			return fmt.Errorf("%s: %s://%s:2379/v2/%s: %s", *instance.InstanceId, clientProtocol,
+				*instance.PrivateIpAddress, path, err)
 		}
 
 		// if the cluster has a leader other than the current node, then don't do the
 		// backup.
 		if nodeState.LeaderInfo.Leader != "" && nodeState.ID != nodeState.LeaderInfo.Leader {
-			log.Printf("backup: %s: %s://%s:2379/v2/stats/self: not the leader", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress)
+			log.Printf("backup: %s: %s://%s:2379/v2/%s: not the leader", *instance.InstanceId, clientProtocol,
+				*instance.PrivateIpAddress, path)
 			<-ticker
 			continue
 		}

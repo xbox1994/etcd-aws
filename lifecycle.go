@@ -7,7 +7,6 @@ import (
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/opsline/ec2cluster"
 )
 
@@ -19,7 +18,7 @@ func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, 
 	}
 
 	// look for the instance in the cluster
-	resp, err := http.Get(fmt.Sprintf("%s/v2/members", etcdLocalURL))
+	resp, err := getApiResponse(*localInstance.PrivateIpAddress, *localInstance.InstanceId, "members", http.MethodGet)
 	if err != nil {
 		return false, err
 	}
@@ -42,8 +41,8 @@ func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, 
 	log.WithFields(log.Fields{
 		"InstanceID": m.EC2InstanceID,
 		"MemberID":   memberID}).Info("removing from cluster")
-	req, _ := http.NewRequest("DELETE", fmt.Sprintf("%s/v2/members/%s", etcdLocalURL, memberID), nil)
-	_, err = http.DefaultClient.Do(req)
+	
+	resp, err = getApiResponse(*localInstance.PrivateIpAddress, *localInstance.InstanceId, fmt.Sprintf("members/%s", memberID), http.MethodDelete)
 	if err != nil {
 		return false, err
 	}
@@ -51,8 +50,8 @@ func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, 
 	return false, nil
 }
 
-func watchLifecycleEvents(s *ec2cluster.Cluster, localInstance *ec2.Instance) {
-	etcdLocalURL = fmt.Sprintf("%s://%s:2379", clientProtocol, *localInstance.PrivateIpAddress)
+func watchLifecycleEvents(s *ec2cluster.Cluster) {
+	localInstance, _ = s.Instance()
 	for {
 		err := s.WatchLifecycleEvents(handleLifecycleEvent)
 

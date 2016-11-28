@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 
 	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/crewjam/awsregion"
 	"github.com/opsline/ec2cluster"
@@ -51,7 +53,7 @@ type etcdMember struct {
 	ClientURLs []string `json:"clientURLs,omitempty"`
 }
 
-var etcdLocalURL string
+var localInstance *ec2.Instance
 var peerProtocol string
 var clientProtocol string
 var etcdCertFile *string
@@ -59,44 +61,63 @@ var etcdKeyFile *string
 var etcdTrustedCaFile *string
 var clientTlsEnabled bool
 
-func get_api_resp(privateIpAddress string, instanceId string, path string) (*http.Response, error) {
+func getTlsConfig() (*tls.Config, error) {
+	// Load client cert
+	cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("ERROR: %s", err)
+	}
+
+	// Load CA cert
+	caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
+	if err != nil {
+		return nil, fmt.Errorf("ERROR: %s", err)
+	}
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	// Setup HTTPS client
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caCertPool,
+	}
+	tlsConfig.BuildNameToCertificate()
+	return tlsConfig, nil
+}
+
+func getApiResponse(privateIpAddress string, instanceId string, path string, method string) (*http.Response, error) {
+	return getApiResponseWithBody(privateIpAddress, instanceId, path, method, "", nil)
+}
+
+func getApiResponseWithBody(privateIpAddress string, instanceId string, path string, method string, bodyType string, body io.Reader) (*http.Response, error) {
 	var resp *http.Response
 	var err error
-	if clientTlsEnabled {
-		// Load client cert
-		cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
-		if err != nil {
-			return nil, fmt.Errorf("ERROR: %s", err)
-		}
+	var req *http.Request
 
-		// Load CA cert
-		caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
-		if err != nil {
-			return nil, fmt.Errorf("ERROR: %s", err)
-		}
-		caCertPool := x509.NewCertPool()
-		caCertPool.AppendCertsFromPEM(caCert)
+	if bodyType == "" {
+		req, _ = http.NewRequest(method, fmt.Sprintf("%s://%s:2379/v2/%s", clientProtocol, privateIpAddress, path), body)
+	}
 
-		// Setup HTTPS client
-		tlsConfig := &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			RootCAs:      caCertPool,
-		}
-		tlsConfig.BuildNameToCertificate()
+	if clientTlsEnabled {		
+		tlsConfig, _ := getTlsConfig()
 		transport := &http.Transport{TLSClientConfig: tlsConfig}
 		client := &http.Client{Transport: transport}
 
-		resp, err = client.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", clientProtocol, privateIpAddress))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", instanceId, clientProtocol,
-				privateIpAddress, err)
+		if bodyType != "" {
+			client.Post(fmt.Sprintf("%s://%s:2379/v2/%s", clientProtocol, privateIpAddress, path), bodyType, body) // TLS POST request
+		} else {
+			resp, err = client.Do(req) // TLS request
 		}
 	} else {
-		resp, err = http.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", clientProtocol, privateIpAddress))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", instanceId, clientProtocol,
-				privateIpAddress, err)
+		if bodyType != "" {
+			http.Post(fmt.Sprintf("%s://%s:2379/v2/%s", clientProtocol, privateIpAddress, path), bodyType, body) // non-TLS POST request
+		} else {
+			resp, err = http.DefaultClient.Do(req) // non-TLS request
 		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("%s: %s %s://%s:2379/v2/%s: %s", instanceId, method, clientProtocol, privateIpAddress, path, err)
 	}
 	return resp, nil
 }
@@ -130,31 +151,32 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 		}
 
 		// fetch the state of the node.
-		resp, err := get_api_resp(*instance.PrivateIpAddress, *instance.InstanceId)
+		path := "stats/self"
+		resp, err := getApiResponse(*instance.PrivateIpAddress, *instance.InstanceId, path, http.MethodGet)
 		if err != nil {
-			log.Printf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, err)
+			log.Printf("%s: %s://%s:2379/v2/%s: %s", *instance.InstanceId, clientProtocol,
+				*instance.PrivateIpAddress, path, err)
 			continue
 		}
 		nodeState := etcdState{}
 		if err := json.NewDecoder(resp.Body).Decode(&nodeState); err != nil {
-			log.Printf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, err)
+			log.Printf("%s: %s://%s:2379/v2/%s: %s", *instance.InstanceId, clientProtocol,
+				*instance.PrivateIpAddress, path, err)
 			continue
 		}
 
 		if nodeState.LeaderInfo.Leader == "" {
-			log.Printf("%s: %s://%s:2379/v2/stats/self: alive, no leader", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress)
+			log.Printf("%s: %s://%s:2379/v2/%s: alive, no leader", *instance.InstanceId, clientProtocol,
+				*instance.PrivateIpAddress, path)
 			continue
 		}
 
-		log.Printf("%s: %s://%s:2379/v2/stats/self: has leader %s", *instance.InstanceId, clientProtocol,
-			*instance.PrivateIpAddress, nodeState.LeaderInfo.Leader)
+		log.Printf("%s: %s://%s:2379/v2/%s: has leader %s", *instance.InstanceId, clientProtocol,
+			*instance.PrivateIpAddress, path, nodeState.LeaderInfo.Leader)
 		if initialClusterState != "existing" {
 			initialClusterState = "existing"
 
-			// inform the know we found about the new node we're about to add so that
+			// inform the node we found about the new node we're about to add so that
 			// when etcd starts we can avoid etcd thinking the cluster is out of sync.
 			log.Printf("joining cluster via %s", *instance.InstanceId)
 			m := etcdMember{
@@ -162,8 +184,8 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 				PeerURLs: []string{fmt.Sprintf("%s://%s:2380", peerProtocol, *localInstance.PrivateIpAddress)},
 			}
 			body, _ := json.Marshal(m)
-			http.Post(fmt.Sprintf("%s://%s:2379/v2/members", clientProtocol, *instance.PrivateIpAddress),
-				"application/json", bytes.NewReader(body))
+			getApiResponseWithBody(*instance.PrivateIpAddress, *instance.InstanceId, "members", http.MethodPost, "application/json", bytes.NewReader(body))
+			//http.Post(fmt.Sprintf("%s://%s:2379/v2/members", clientProtocol, *instance.PrivateIpAddress),	"application/json", bytes.NewReader(body))
 		}
 	}
 	return initialClusterState, initialCluster, nil
@@ -319,7 +341,7 @@ func main() {
 
 	// watch for lifecycle events and remove nodes from the cluster as they are
 	// terminated.
-	go watchLifecycleEvents(s, localInstance)
+	go watchLifecycleEvents(s)
 
 	// Run the etcd command
 	cmd := exec.Command("etcd")
