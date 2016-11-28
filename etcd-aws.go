@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
@@ -56,6 +59,48 @@ var etcdKeyFile *string
 var etcdTrustedCaFile *string
 var clientTlsEnabled bool
 
+func get_api_resp(privateIpAddress string, instanceId string, path string) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+	if clientTlsEnabled {
+		// Load client cert
+		cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+
+		// Load CA cert
+		caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+
+		// Setup HTTPS client
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      caCertPool,
+		}
+		tlsConfig.BuildNameToCertificate()
+		transport := &http.Transport{TLSClientConfig: tlsConfig}
+		client := &http.Client{Transport: transport}
+
+		resp, err = client.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", clientProtocol, privateIpAddress))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", instanceId, clientProtocol,
+				privateIpAddress, err)
+		}
+	} else {
+		resp, err = http.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", clientProtocol, privateIpAddress))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %s://%s:2379/v2/stats/self: %s", instanceId, clientProtocol,
+				privateIpAddress, err)
+		}
+	}
+	return resp, nil
+}
+
 func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialCluster []string, err error) {
 
 	localInstance, err := s.Instance()
@@ -85,7 +130,7 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 		}
 
 		// fetch the state of the node.
-		resp, err := http.Get(fmt.Sprintf("%s://%s:2379/v2/stats/self", clientProtocol, *instance.PrivateIpAddress))
+		resp, err := get_api_resp(*instance.PrivateIpAddress, *instance.InstanceId)
 		if err != nil {
 			log.Printf("%s: %s://%s:2379/v2/stats/self: %s", *instance.InstanceId, clientProtocol,
 				*instance.PrivateIpAddress, err)
