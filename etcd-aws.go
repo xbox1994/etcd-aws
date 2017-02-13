@@ -19,9 +19,11 @@ import (
 	log "github.com/Sirupsen/logrus"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/coreos/go-etcd/etcd"
+	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/pkg/transport"
 	"github.com/crewjam/awsregion"
 	"github.com/opsline/ec2cluster"
+	"golang.org/x/net/context"
 )
 
 type etcdState struct {
@@ -56,6 +58,7 @@ type etcdMember struct {
 var localInstance *ec2.Instance
 var peerProtocol string
 var clientProtocol string
+var etcdApiVersion *string
 var etcdCertFile *string
 var etcdKeyFile *string
 var etcdTrustedCaFile *string
@@ -85,6 +88,26 @@ func getTlsConfig() (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
+func getEtcdClient(endpoints []string) (*clientv3.Client, error) {
+	tlsInfo := transport.TLSInfo{
+		CertFile:      *etcdCertFile,
+		KeyFile:       *etcdKeyFile,
+		TrustedCAFile: *etcdTrustedCaFile,
+	}
+	tlsConfig, err := tlsInfo.ClientConfig()
+	if err != nil {
+		return nil, fmt.Errorf("ERROR: %s", err)
+	}
+	etcdClient, err := clientv3.New(clientv3.Config{
+		Endpoints: endpoints,
+		TLS:       tlsConfig,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ERROR: %s", err)
+	}
+	return etcdClient, nil
+}
+
 func getApiResponse(privateIpAddress string, instanceId string, path string, method string) (*http.Response, error) {
 	return getApiResponseWithBody(privateIpAddress, instanceId, path, method, "", nil)
 }
@@ -98,7 +121,7 @@ func getApiResponseWithBody(privateIpAddress string, instanceId string, path str
 		req, _ = http.NewRequest(method, fmt.Sprintf("%s://%s:2379/v2/%s", clientProtocol, privateIpAddress, path), body)
 	}
 
-	if clientTlsEnabled {		
+	if clientTlsEnabled {
 		tlsConfig, _ := getTlsConfig()
 		transport := &http.Transport{TLSClientConfig: tlsConfig}
 		client := &http.Client{Transport: transport}
@@ -219,13 +242,21 @@ func main() {
 		"The name of the S3 key where tha backup is stored. "+
 			"Environment variable: ETCD_BACKUP_KEY")
 
-	defaultDataDir := "/var/lib/etcd2"
+	defaultDataDir := "/var/lib/etcd"
 	if d := os.Getenv("ETCD_DATA_DIR"); d != "" {
 		defaultDataDir = d
 	}
 	dataDir := flag.String("data-dir", defaultDataDir,
-		"The path to the etcd2 data directory. "+
+		"The path to the etcd data directory. "+
 			"Environment variable: ETCD_DATA_DIR")
+
+	defaultEtcdApiVersion := "2"
+	if av := os.Getenv("ETCD_API_VERSION"); av != "" {
+		defaultEtcdApiVersion = av
+	}
+	etcdApiVersion = flag.String("etcd-api-version", defaultEtcdApiVersion,
+		"Etcd API version (2, 3). "+
+			"Environment variable: ETCD_API_VERSION")
 
 	etcdCertFile = flag.String("etcd-cert-file", os.Getenv("ETCD_CERT_FILE"),
 		"Path to the client server TLS cert file. "+
@@ -311,31 +342,28 @@ func main() {
 	}
 	go func() {
 		// wait for etcd to start
-		var etcdClient *etcd.Client
+		var etcdClient *clientv3.Client
 		for {
-			if clientTlsEnabled {
-				etcdClient, err = etcd.NewTLSClient([]string{fmt.Sprintf("https://%s:2379", *localInstance.PrivateIpAddress)},
-					*etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
-				if err != nil {
-					log.Fatalf("ERROR: %s", err)
-				}
-			} else {
-				etcdClient = etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *localInstance.PrivateIpAddress)})
-			}
-			if success := etcdClient.SyncCluster(); success {
+			etcdClient, err = getEtcdClient([]string{fmt.Sprintf("%s://%s:2379", clientProtocol, *localInstance.PrivateIpAddress)})
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			err := etcdClient.Sync(ctx)
+			cancel()
+			if err != nil {
 				break
 			}
 			time.Sleep(time.Second)
 		}
 
-		if shouldTryRestore {
-			if err := restoreBackup(s, *backupBucket, *backupKey, *dataDir); err != nil {
+		if *etcdApiVersion == "2" {
+			if shouldTryRestore {
+				if err := restoreBackup(s, *backupBucket, *backupKey, *dataDir); err != nil {
+					log.Fatalf("ERROR: %s", err)
+				}
+			}
+
+			if err := backupService(s, *backupBucket, *backupKey, *dataDir, *backupInterval); err != nil {
 				log.Fatalf("ERROR: %s", err)
 			}
-		}
-
-		if err := backupService(s, *backupBucket, *backupKey, *dataDir, *backupInterval); err != nil {
-			log.Fatalf("ERROR: %s", err)
 		}
 	}()
 
@@ -344,12 +372,13 @@ func main() {
 	go watchLifecycleEvents(s)
 
 	// Run the etcd command
-	cmd := exec.Command("etcd")
+	cmd := exec.Command(fmt.Sprintf("etcd%s", *etcdApiVersion))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = []string{
 		fmt.Sprintf("ETCD_NAME=%s", *localInstance.InstanceId),
-		fmt.Sprintf("ETCD_DATA_DIR=/var/lib/etcd2"),
+		fmt.Sprintf("ETCD_API_VERSION=%s", *etcdApiVersion),
+		fmt.Sprintf("ETCD_DATA_DIR=%s", *dataDir),
 		fmt.Sprintf("ETCD_ADVERTISE_CLIENT_URLS=%s://%s:2379", clientProtocol, *localInstance.PrivateIpAddress),
 		fmt.Sprintf("ETCD_LISTEN_CLIENT_URLS=%s://0.0.0.0:2379", clientProtocol),
 		fmt.Sprintf("ETCD_LISTEN_PEER_URLS=%s://0.0.0.0:2380", peerProtocol),
