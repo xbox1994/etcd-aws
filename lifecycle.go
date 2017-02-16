@@ -41,7 +41,7 @@ func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, 
 	log.WithFields(log.Fields{
 		"InstanceID": m.EC2InstanceID,
 		"MemberID":   memberID}).Info("removing from cluster")
-	
+
 	resp, err = getApiResponse(*localInstance.PrivateIpAddress, *localInstance.InstanceId, fmt.Sprintf("members/%s", memberID), http.MethodDelete)
 	if err != nil {
 		return false, err

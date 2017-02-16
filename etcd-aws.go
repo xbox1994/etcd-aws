@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
+	// "path/filepath"
 	"strings"
 	"time"
 
@@ -66,46 +66,59 @@ var etcdClientPort *string
 var etcdPeerPort *string
 var clientTlsEnabled bool
 
-func getTlsConfig() (*tls.Config, error) {
-	// Load client cert
-	cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("ERROR: %s", err)
+func getHttpClient() (*http.Client, error) {
+	var transport *http.Transport
+	if clientTlsEnabled {
+		cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+		caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      caCertPool,
+		}
+		tlsConfig.BuildNameToCertificate()
+		transport = &http.Transport{TLSClientConfig: tlsConfig}
+	} else {
+		transport = &http.Transport{}
 	}
-
-	// Load CA cert
-	caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
-	if err != nil {
-		return nil, fmt.Errorf("ERROR: %s", err)
-	}
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(caCert)
-
-	// Setup HTTPS client
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-	}
-	tlsConfig.BuildNameToCertificate()
-	return tlsConfig, nil
+	client := &http.Client{Transport: transport}
+	return client, nil
 }
 
 func getEtcdClient(endpoints []string) (*clientv3.Client, error) {
-	tlsInfo := transport.TLSInfo{
-		CertFile:      *etcdCertFile,
-		KeyFile:       *etcdKeyFile,
-		TrustedCAFile: *etcdTrustedCaFile,
-	}
-	tlsConfig, err := tlsInfo.ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("ERROR: %s", err)
-	}
-	etcdClient, err := clientv3.New(clientv3.Config{
-		Endpoints: endpoints,
-		TLS:       tlsConfig,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("ERROR: %s", err)
+	var etcdClient *clientv3.Client
+	var err error
+	if clientTlsEnabled {
+		tlsInfo := transport.TLSInfo{
+			CertFile:      *etcdCertFile,
+			KeyFile:       *etcdKeyFile,
+			TrustedCAFile: *etcdTrustedCaFile,
+		}
+		tlsConfig, err := tlsInfo.ClientConfig()
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+		etcdClient, err = clientv3.New(clientv3.Config{
+			Endpoints: endpoints,
+			TLS:       tlsConfig,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+	} else {
+		etcdClient, err = clientv3.New(clientv3.Config{
+			Endpoints: endpoints,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
 	}
 	return etcdClient, nil
 }
@@ -120,29 +133,22 @@ func getApiResponseWithBody(privateIpAddress string, instanceId string, path str
 	var req *http.Request
 
 	if bodyType == "" {
-		req, _ = http.NewRequest(method, fmt.Sprintf("%s://%s:%s/v2/%s", clientProtocol, privateIpAddress, *etcdClientPort, path), body)
+		req, _ = http.NewRequest(method, fmt.Sprintf("%s://%s:%s/v2/%s",
+			clientProtocol, privateIpAddress, *etcdClientPort, path), body)
 	}
 
-	if clientTlsEnabled {
-		tlsConfig, _ := getTlsConfig()
-		transport := &http.Transport{TLSClientConfig: tlsConfig}
-		client := &http.Client{Transport: transport}
+	client, err := getHttpClient()
 
-		if bodyType != "" {
-			client.Post(fmt.Sprintf("%s://%s:%s/v2/%s", clientProtocol, privateIpAddress, *etcdClientPort, path), bodyType, body) // TLS POST request
-		} else {
-			resp, err = client.Do(req) // TLS request
-		}
+	if bodyType != "" {
+		client.Post(fmt.Sprintf("%s://%s:%s/v2/%s",
+			clientProtocol, privateIpAddress, *etcdClientPort, path), bodyType, body)
 	} else {
-		if bodyType != "" {
-			http.Post(fmt.Sprintf("%s://%s:%s/v2/%s", clientProtocol, privateIpAddress, *etcdClientPort, path), bodyType, body) // non-TLS POST request
-		} else {
-			resp, err = http.DefaultClient.Do(req) // non-TLS request
-		}
+		resp, err = client.Do(req)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("%s: %s %s://%s:%s/v2/%s: %s", instanceId, method, clientProtocol, privateIpAddress, *etcdClientPort, path, err)
+		return nil, fmt.Errorf("%s: %s %s://%s:%s/v2/%s: %s",
+			instanceId, method, clientProtocol, privateIpAddress, *etcdClientPort, path, err)
 	}
 	return resp, nil
 }
@@ -165,6 +171,7 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 		if instance.PrivateIpAddress == nil {
 			continue
 		}
+		log.Printf("getting stats from %s (%s)", *instance.InstanceId, *instance.PrivateIpAddress)
 
 		// add this instance to the initialCluster expression
 		initialCluster = append(initialCluster, fmt.Sprintf("%s=%s://%s:%s",
@@ -205,12 +212,12 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 			// when etcd starts we can avoid etcd thinking the cluster is out of sync.
 			log.Printf("joining cluster via %s", *instance.InstanceId)
 			m := etcdMember{
-				Name:     *localInstance.InstanceId,
-				PeerURLs: []string{fmt.Sprintf("%s://%s:%s", peerProtocol, *localInstance.PrivateIpAddress, *etcdPeerPort)},
+				Name: *localInstance.InstanceId,
+				PeerURLs: []string{fmt.Sprintf("%s://%s:%s",
+					peerProtocol, *localInstance.PrivateIpAddress, *etcdPeerPort)},
 			}
 			body, _ := json.Marshal(m)
 			getApiResponseWithBody(*instance.PrivateIpAddress, *instance.InstanceId, "members", http.MethodPost, "application/json", bytes.NewReader(body))
-			//http.Post(fmt.Sprintf("%s://%s:%s/v2/members", clientProtocol, *instance.PrivateIpAddress, *etcdClientPort),	"application/json", bytes.NewReader(body))
 		}
 	}
 	return initialClusterState, initialCluster, nil
@@ -222,27 +229,26 @@ func main() {
 	clusterTagName := flag.String("tag", "aws:autoscaling:groupName",
 		"The instance tag that is common to all members of the cluster")
 
-	defaultBackupInterval := 5 * time.Minute
-	if d := os.Getenv("ETCD_BACKUP_INTERVAL"); d != "" {
-		var err error
-		defaultBackupInterval, err = time.ParseDuration(d)
-		if err != nil {
-			log.Fatalf("ERROR: %s", err)
-		}
-	}
-
-	backupInterval := flag.Duration("backup-interval", defaultBackupInterval,
-		"How frequently to back up the etcd data to S3")
-	backupBucket := flag.String("backup-bucket", os.Getenv("ETCD_BACKUP_BUCKET"),
-		"The name of the S3 bucket where tha backup is stored. "+
-			"Environment variable: ETCD_BACKUP_BUCKET")
-	defaultBackupKey := "/etcd-backup.gz"
-	if d := os.Getenv("ETCD_BACKUP_KEY"); d != "" {
-		defaultBackupKey = d
-	}
-	backupKey := flag.String("backup-key", defaultBackupKey,
-		"The name of the S3 key where tha backup is stored. "+
-			"Environment variable: ETCD_BACKUP_KEY")
+	// defaultBackupInterval := 5 * time.Minute
+	// if d := os.Getenv("ETCD_BACKUP_INTERVAL"); d != "" {
+	// 	var err error
+	// 	defaultBackupInterval, err = time.ParseDuration(d)
+	// 	if err != nil {
+	// 		log.Fatalf("ERROR: %s", err)
+	// 	}
+	// }
+	// backupInterval := flag.Duration("backup-interval", defaultBackupInterval,
+	// 	"How frequently to back up the etcd data to S3")
+	// backupBucket := flag.String("backup-bucket", os.Getenv("ETCD_BACKUP_BUCKET"),
+	// 	"The name of the S3 bucket where tha backup is stored. "+
+	// 		"Environment variable: ETCD_BACKUP_BUCKET")
+	// defaultBackupKey := "/etcd-backup.gz"
+	// if d := os.Getenv("ETCD_BACKUP_KEY"); d != "" {
+	// 	defaultBackupKey = d
+	// }
+	// backupKey := flag.String("backup-key", defaultBackupKey,
+	// 	"The name of the S3 key where tha backup is stored. "+
+	// 		"Environment variable: ETCD_BACKUP_KEY")
 
 	defaultDataDir := "/var/lib/etcd"
 	if d := os.Getenv("ETCD_DATA_DIR"); d != "" {
@@ -346,42 +352,52 @@ func main() {
 	}
 
 	initialClusterState, initialCluster, err := buildCluster(s)
+	log.Printf("initial cluster: %s %s", initialClusterState, initialCluster)
 
 	// start the backup and restore goroutine.
-	shouldTryRestore := false
-	if initialClusterState == "new" {
-		_, err := os.Stat(filepath.Join(*dataDir, "member"))
-		if os.IsNotExist(err) {
-			shouldTryRestore = true
-		} else {
-			log.Printf("%s: %s", filepath.Join(*dataDir, "member"), err)
-		}
-	}
+	// shouldTryRestore := false
+	// if initialClusterState == "new" {
+	// 	_, err := os.Stat(filepath.Join(*dataDir, "member"))
+	// 	if os.IsNotExist(err) {
+	// 		shouldTryRestore = true
+	// 	} else {
+	// 		log.Printf("%s: %s", filepath.Join(*dataDir, "member"), err)
+	// 	}
+	// }
 	go func() {
 		// wait for etcd to start
 		var etcdClient *clientv3.Client
 		for {
-			etcdClient, err = getEtcdClient([]string{fmt.Sprintf("%s://%s:%s", clientProtocol, *localInstance.PrivateIpAddress, *etcdClientPort)})
+			log.Printf("etcd connecting")
+			etcdClient, err = getEtcdClient([]string{fmt.Sprintf("%s://%s:%s",
+				clientProtocol, *localInstance.PrivateIpAddress, *etcdClientPort)})
+			if err != nil {
+				log.Fatalf("ERROR: %s", err)
+			}
+			defer etcdClient.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			err := etcdClient.Sync(ctx)
 			cancel()
 			if err != nil {
+				log.Printf("waiting for etcd to start: %s", err)
+			} else {
+				log.Printf("etcd connected")
+				resp, _ := etcdClient.MemberList(context.Background())
+				log.Printf("etcd members: %s", resp.Members)
 				break
 			}
 			time.Sleep(time.Second)
 		}
 
-		if *etcdApiVersion == "2" {
-			if shouldTryRestore {
-				if err := restoreBackup(s, *backupBucket, *backupKey, *dataDir); err != nil {
-					log.Fatalf("ERROR: %s", err)
-				}
-			}
+		// if shouldTryRestore {
+		// 	if err := restoreBackup(s, *backupBucket, *backupKey, *dataDir); err != nil {
+		// 		log.Fatalf("ERROR: %s", err)
+		// 	}
+		// }
 
-			if err := backupService(s, *backupBucket, *backupKey, *dataDir, *backupInterval); err != nil {
-				log.Fatalf("ERROR: %s", err)
-			}
-		}
+		// if err := backupService(s, *backupBucket, *backupKey, *dataDir, *backupInterval); err != nil {
+		// 	log.Fatalf("ERROR: %s", err)
+		// }
 	}()
 
 	// watch for lifecycle events and remove nodes from the cluster as they are
