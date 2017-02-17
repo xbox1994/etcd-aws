@@ -21,7 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/crewjam/awsregion"
-	"github.com/opsline/ec2cluster"
+	"github.com/crewjam/ec2cluster"
 )
 
 type etcdState struct {
@@ -61,28 +61,44 @@ var etcdKeyFile *string
 var etcdTrustedCaFile *string
 var clientTlsEnabled bool
 
-func getTlsConfig() (*tls.Config, error) {
-	// Load client cert
-	cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("ERROR: %s", err)
+func getHttpClient() (*http.Client, error) {
+	var transport *http.Transport
+	if clientTlsEnabled {
+		cert, err := tls.LoadX509KeyPair(*etcdCertFile, *etcdKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+		caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
+		if err != nil {
+			return nil, fmt.Errorf("ERROR: %s", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			RootCAs:      caCertPool,
+		}
+		tlsConfig.BuildNameToCertificate()
+		transport = &http.Transport{TLSClientConfig: tlsConfig}
+	} else {
+		transport = &http.Transport{}
 	}
+	client := &http.Client{Transport: transport}
+	return client, nil
+}
 
-	// Load CA cert
-	caCert, err := ioutil.ReadFile(*etcdTrustedCaFile)
-	if err != nil {
-		return nil, fmt.Errorf("ERROR: %s", err)
+func getEtcdClient(endpoints []string) (*etcd.Client, error) {
+	var etcdClient *etcd.Client
+	var err error
+	if clientTlsEnabled {
+		etcdClient, err = etcd.NewTLSClient(endpoints, *etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
+		if err != nil {
+			log.Fatalf("ERROR: %s", err)
+		}
+	} else {
+		etcdClient = etcd.NewClient(endpoints)
 	}
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(caCert)
-
-	// Setup HTTPS client
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caCertPool,
-	}
-	tlsConfig.BuildNameToCertificate()
-	return tlsConfig, nil
+	return etcdClient, nil
 }
 
 func getApiResponse(privateIpAddress string, instanceId string, path string, method string) (*http.Response, error) {
@@ -95,29 +111,22 @@ func getApiResponseWithBody(privateIpAddress string, instanceId string, path str
 	var req *http.Request
 
 	if bodyType == "" {
-		req, _ = http.NewRequest(method, fmt.Sprintf("%s://%s:2379/v2/%s", clientProtocol, privateIpAddress, path), body)
+		req, _ = http.NewRequest(method, fmt.Sprintf("%s://%s:2379/v2/%s",
+			clientProtocol, privateIpAddress, path), body)
 	}
 
-	if clientTlsEnabled {		
-		tlsConfig, _ := getTlsConfig()
-		transport := &http.Transport{TLSClientConfig: tlsConfig}
-		client := &http.Client{Transport: transport}
+	client, err := getHttpClient()
 
-		if bodyType != "" {
-			client.Post(fmt.Sprintf("%s://%s:2379/v2/%s", clientProtocol, privateIpAddress, path), bodyType, body) // TLS POST request
-		} else {
-			resp, err = client.Do(req) // TLS request
-		}
+	if bodyType != "" {
+		client.Post(fmt.Sprintf("%s://%s:2379/v2/%s",
+			clientProtocol, privateIpAddress, path), bodyType, body)
 	} else {
-		if bodyType != "" {
-			http.Post(fmt.Sprintf("%s://%s:2379/v2/%s", clientProtocol, privateIpAddress, path), bodyType, body) // non-TLS POST request
-		} else {
-			resp, err = http.DefaultClient.Do(req) // non-TLS request
-		}
+		resp, err = client.Do(req)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("%s: %s %s://%s:2379/v2/%s: %s", instanceId, method, clientProtocol, privateIpAddress, path, err)
+		return nil, fmt.Errorf("%s: %s %s://%s:2379/v2/%s: %s",
+			instanceId, method, clientProtocol, privateIpAddress, path, err)
 	}
 	return resp, nil
 }
@@ -185,7 +194,6 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 			}
 			body, _ := json.Marshal(m)
 			getApiResponseWithBody(*instance.PrivateIpAddress, *instance.InstanceId, "members", http.MethodPost, "application/json", bytes.NewReader(body))
-			//http.Post(fmt.Sprintf("%s://%s:2379/v2/members", clientProtocol, *instance.PrivateIpAddress),	"application/json", bytes.NewReader(body))
 		}
 	}
 	return initialClusterState, initialCluster, nil
@@ -226,6 +234,14 @@ func main() {
 	dataDir := flag.String("data-dir", defaultDataDir,
 		"The path to the etcd2 data directory. "+
 			"Environment variable: ETCD_DATA_DIR")
+
+	defaultLifecycleQueueName := ""
+	if lq := os.Getenv("LIFECYCLE_QUEUE_NAME"); lq != "" {
+		defaultLifecycleQueueName = lq
+	}
+	lifecycleQueueName := flag.String("lifecycle-queue-name", defaultLifecycleQueueName,
+		"The name of the lifecycle SQS queue (optional). "+
+			"Environment variable: LIFECYCLE_QUEUE_NAME")
 
 	etcdCertFile = flag.String("etcd-cert-file", os.Getenv("ETCD_CERT_FILE"),
 		"Path to the client server TLS cert file. "+
@@ -313,15 +329,7 @@ func main() {
 		// wait for etcd to start
 		var etcdClient *etcd.Client
 		for {
-			if clientTlsEnabled {
-				etcdClient, err = etcd.NewTLSClient([]string{fmt.Sprintf("https://%s:2379", *localInstance.PrivateIpAddress)},
-					*etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
-				if err != nil {
-					log.Fatalf("ERROR: %s", err)
-				}
-			} else {
-				etcdClient = etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *localInstance.PrivateIpAddress)})
-			}
+			etcdClient, _ = getEtcdClient([]string{fmt.Sprintf("https://%s:2379", *localInstance.PrivateIpAddress)})
 			if success := etcdClient.SyncCluster(); success {
 				break
 			}
@@ -341,7 +349,7 @@ func main() {
 
 	// watch for lifecycle events and remove nodes from the cluster as they are
 	// terminated.
-	go watchLifecycleEvents(s)
+	go watchLifecycleEvents(s, *lifecycleQueueName)
 
 	// Run the etcd command
 	cmd := exec.Command("etcd")

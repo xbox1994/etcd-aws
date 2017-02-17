@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	log "github.com/Sirupsen/logrus"
-	"github.com/opsline/ec2cluster"
+	"github.com/aws/aws-sdk-go/service/autoscaling"
+	"github.com/aws/aws-sdk-go/service/sqs"
+	"github.com/crewjam/ec2cluster"
 )
 
 // handleLifecycleEvent is invoked whenever we get a lifecycle terminate message. It removes
@@ -41,7 +44,7 @@ func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, 
 	log.WithFields(log.Fields{
 		"InstanceID": m.EC2InstanceID,
 		"MemberID":   memberID}).Info("removing from cluster")
-	
+
 	resp, err = getApiResponse(*localInstance.PrivateIpAddress, *localInstance.InstanceId, fmt.Sprintf("members/%s", memberID), http.MethodDelete)
 	if err != nil {
 		return false, err
@@ -50,10 +53,12 @@ func handleLifecycleEvent(m *ec2cluster.LifecycleMessage) (shouldContinue bool, 
 	return false, nil
 }
 
-func watchLifecycleEvents(s *ec2cluster.Cluster) {
+func watchLifecycleEvents(s *ec2cluster.Cluster, queueName string) {
 	localInstance, _ = s.Instance()
 	for {
-		err := s.WatchLifecycleEvents(handleLifecycleEvent)
+		q, _ := LifecycleEventQueueURL(s, queueName)
+		log.Printf("SQS queue URL: %s", q)
+		err := s.WatchLifecycleEvents(q, handleLifecycleEvent)
 
 		// The lifecycle hook might not exist yet if we're being created
 		// by cloudformation.
@@ -67,4 +72,43 @@ func watchLifecycleEvents(s *ec2cluster.Cluster) {
 		}
 		panic("not reached")
 	}
+}
+
+func LifecycleEventQueueURL(s *ec2cluster.Cluster, queueName string) (string, error) {
+	asg, err := s.AutoscalingGroup()
+	if err != nil {
+		return "", err
+	}
+
+	autoscalingSvc := autoscaling.New(s.AwsSession)
+	resp, err := autoscalingSvc.DescribeLifecycleHooks(&autoscaling.DescribeLifecycleHooksInput{
+		AutoScalingGroupName: asg.AutoScalingGroupName,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	sqsSvc := sqs.New(s.AwsSession)
+	for _, hook := range resp.LifecycleHooks {
+		if !strings.HasPrefix(*hook.NotificationTargetARN, "arn:aws:sqs:") {
+			continue
+		}
+		arnParts := strings.Split(*hook.NotificationTargetARN, ":")
+		qName := arnParts[len(arnParts)-1]
+		qOwnerAWSAccountID := arnParts[len(arnParts)-2]
+
+		if queueName != "" && !strings.Contains(qName, "-"+queueName+"-") {
+			continue
+		}
+
+		resp, err := sqsSvc.GetQueueUrl(&sqs.GetQueueUrlInput{
+			QueueName:              &qName,
+			QueueOwnerAWSAccountId: &qOwnerAWSAccountID,
+		})
+		if err != nil {
+			return "", err
+		}
+		return *resp.QueueUrl, nil
+	}
+	return "", ec2cluster.ErrLifecycleHookNotFound
 }

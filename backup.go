@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	"github.com/coreos/go-etcd/etcd"
-	"github.com/opsline/ec2cluster"
+	"github.com/crewjam/ec2cluster"
 )
 
 // backupService invokes backupOnce() periodically if the current node is the cluster leader.
@@ -116,15 +116,7 @@ func backupOnce(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir string) 
 	if err != nil {
 		return err
 	}
-	if clientTlsEnabled {
-		etcdClient, err = etcd.NewTLSClient([]string{fmt.Sprintf("https://%s:2379", *instance.PrivateIpAddress)},
-			*etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
-		if err != nil {
-			log.Fatalf("ERROR: %s", err)
-		}
-	} else {
-		etcdClient = etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *instance.PrivateIpAddress)})
-	}
+	etcdClient, _ = getEtcdClient([]string{fmt.Sprintf("https://%s:2379", *instance.PrivateIpAddress)})
 	if success := etcdClient.SyncCluster(); !success {
 		return fmt.Errorf("backupOnce: cannot sync machines")
 	}
@@ -229,15 +221,7 @@ func restoreBackup(s *ec2cluster.Cluster, backupBucket, backupKey, dataDir strin
 	if err != nil {
 		return err
 	}
-	if clientTlsEnabled {
-		etcdClient, err = etcd.NewTLSClient([]string{fmt.Sprintf("https://%s:2379", *instance.PrivateIpAddress)},
-			*etcdCertFile, *etcdKeyFile, *etcdTrustedCaFile)
-		if err != nil {
-			log.Fatalf("ERROR: %s", err)
-		}
-	} else {
-		etcdClient = etcd.NewClient([]string{fmt.Sprintf("http://%s:2379", *instance.PrivateIpAddress)})
-	}
+	etcdClient, _ = getEtcdClient([]string{fmt.Sprintf("https://%s:2379", *instance.PrivateIpAddress)})
 	if success := etcdClient.SyncCluster(); !success {
 		return fmt.Errorf("restore: cannot sync machines")
 	}
