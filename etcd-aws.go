@@ -22,7 +22,7 @@ import (
 	"github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/pkg/transport"
 	"github.com/crewjam/awsregion"
-	"github.com/opsline/ec2cluster"
+	"github.com/crewjam/ec2cluster"
 	"golang.org/x/net/context"
 )
 
@@ -58,7 +58,7 @@ type etcdMember struct {
 var localInstance *ec2.Instance
 var peerProtocol string
 var clientProtocol string
-var etcdApiVersion *string
+var etcdMajorVersion *string
 var etcdCertFile *string
 var etcdKeyFile *string
 var etcdTrustedCaFile *string
@@ -258,13 +258,21 @@ func main() {
 		"The path to the etcd data directory. "+
 			"Environment variable: ETCD_DATA_DIR")
 
-	defaultEtcdApiVersion := "2"
-	if av := os.Getenv("ETCD_API_VERSION"); av != "" {
-		defaultEtcdApiVersion = av
+	defaultLifecycleQueueName := ""
+	if lq := os.Getenv("LIFECYCLE_QUEUE_NAME"); lq != "" {
+		defaultLifecycleQueueName = lq
 	}
-	etcdApiVersion = flag.String("etcd-api-version", defaultEtcdApiVersion,
+	lifecycleQueueName := flag.String("lifecycle-queue-name", defaultLifecycleQueueName,
+		"The name of the lifecycle SQS queue (optional). "+
+			"Environment variable: LIFECYCLE_QUEUE_NAME")
+
+	defaultEtcdMajorVersion := "2"
+	if av := os.Getenv("ETCD_MAJOR_VERSION"); av != "" {
+		defaultEtcdMajorVersion = av
+	}
+	etcdMajorVersion = flag.String("etcd-major-version", defaultEtcdMajorVersion,
 		"Etcd API version (2, 3). "+
-			"Environment variable: ETCD_API_VERSION")
+			"Environment variable: ETCD_MAJOR_VERSION")
 
 	defaultClientPort := "2379"
 	if cp := os.Getenv("ETCD_CLIENT_PORT"); cp != "" {
@@ -402,15 +410,14 @@ func main() {
 
 	// watch for lifecycle events and remove nodes from the cluster as they are
 	// terminated.
-	go watchLifecycleEvents(s)
+	go watchLifecycleEvents(s, *lifecycleQueueName)
 
 	// Run the etcd command
-	cmd := exec.Command(fmt.Sprintf("etcd%s", *etcdApiVersion))
+	cmd := exec.Command(fmt.Sprintf("etcd%s", *etcdMajorVersion))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = []string{
 		fmt.Sprintf("ETCD_NAME=%s", *localInstance.InstanceId),
-		fmt.Sprintf("ETCD_API_VERSION=%s", *etcdApiVersion),
 		fmt.Sprintf("ETCD_DATA_DIR=%s", *dataDir),
 		fmt.Sprintf("ETCD_ADVERTISE_CLIENT_URLS=%s://%s:%s", clientProtocol, *localInstance.PrivateIpAddress, *etcdClientPort),
 		fmt.Sprintf("ETCD_LISTEN_CLIENT_URLS=%s://0.0.0.0:%s", clientProtocol, *etcdClientPort),
