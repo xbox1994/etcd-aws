@@ -19,6 +19,7 @@ var Regions = []string{
 	"us-west-2",      // US West (Oregon)
 	"us-west-1",      // US West (N. California)
 	"eu-west-1",      // EU (Ireland)
+	"eu-west-2",      // EU (London)
 	"eu-central-1",   // EU (Frankfurt)
 	"ap-southeast-1", // Asia Pacific (Singapore)
 	"ap-northeast-1", // Asia Pacific (Tokyo)
