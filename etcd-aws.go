@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -182,43 +180,6 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 			continue
 		}
 
-		// fetch the state of the node.
-		path := "stats/self"
-		resp, err := getApiResponse(*instance.PrivateIpAddress, *instance.InstanceId, path, http.MethodGet)
-		if err != nil {
-			log.Printf("%s: %s://%s:%s/v2/%s: %s", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, *etcdClientPort, path, err)
-			continue
-		}
-		nodeState := etcdState{}
-		if err := json.NewDecoder(resp.Body).Decode(&nodeState); err != nil {
-			log.Printf("%s: %s://%s:%s/v2/%s: %s", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, *etcdClientPort, path, err)
-			continue
-		}
-
-		if nodeState.LeaderInfo.Leader == "" {
-			log.Printf("%s: %s://%s:%s/v2/%s: alive, no leader", *instance.InstanceId, clientProtocol,
-				*instance.PrivateIpAddress, *etcdClientPort, path)
-			continue
-		}
-
-		log.Printf("%s: %s://%s:%s/v2/%s: has leader %s", *instance.InstanceId, clientProtocol,
-			*instance.PrivateIpAddress, *etcdClientPort, path, nodeState.LeaderInfo.Leader)
-		if initialClusterState != "existing" {
-			initialClusterState = "existing"
-
-			// inform the node we found about the new node we're about to add so that
-			// when etcd starts we can avoid etcd thinking the cluster is out of sync.
-			log.Printf("joining cluster via %s", *instance.InstanceId)
-			m := etcdMember{
-				Name: *localInstance.InstanceId,
-				PeerURLs: []string{fmt.Sprintf("%s://%s:%s",
-					peerProtocol, *localInstance.PrivateIpAddress, *etcdPeerPort)},
-			}
-			body, _ := json.Marshal(m)
-			getApiResponseWithBody(*instance.PrivateIpAddress, *instance.InstanceId, "members", http.MethodPost, "application/json", bytes.NewReader(body))
-		}
 	}
 	return initialClusterState, initialCluster, nil
 }

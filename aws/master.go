@@ -18,10 +18,10 @@ WantedBy=multi-user.target
 [Service]
 Restart=always
 EnvironmentFile=/etc/etcd_aws.env
-ExecStart=/usr/bin/docker run --name etcd-aws \
+ExecStart=ETCD_MAJOR_VERSION=3 /usr/bin/docker run --name etcd-aws \
   -p 2379:2379 -p 2380:2380 \
   -v /var/lib/etcd3:/var/lib/etcd3 \
-  -e ETCD_BACKUP_BUCKET -e ETCD_BACKUP_KEY \
+  -e ETCD_BACKUP_BUCKET -e ETCD_BACKUP_KEY -e ETCD_MAJOR_VERSION\
   --rm ksowh/etcd-aws
 ExecStop=-/usr/bin/docker rm -f etcd-aws
 `
