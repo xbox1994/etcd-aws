@@ -5,8 +5,8 @@ SOURCES=$(GO_SOURCES)
 PLATFORM_BINARIES=dist/etcd-aws.Linux.x86_64
 
 IMAGE_VERSION=1.1.0
-IMAGE_NAME="opsline/etcd-aws:${IMAGE_VERSION}"
-GITHUB_USER=opsline
+IMAGE_NAME="ksowh/etcd-aws:${IMAGE_VERSION}"
+GITHUB_USER=ksowh
 GITHUB_REPOSITORY=etcd-aws
 
 all: $(PLATFORM_BINARIES)
@@ -20,11 +20,6 @@ dist/cacert.pem:
 
 dist/etcd.Linux.x86_64:
 	[ -d dist ] || mkdir dist
-	curl -L -s https://github.com/coreos/etcd/releases/download/v2.3.7/etcd-v2.3.7-linux-amd64.tar.gz |\
-		tar -C dist -xzf -
-	cp dist/etcd-v2.3.7-linux-amd64/etcd dist/etcd2.Linux.x86_64
-	cp dist/etcd-v2.3.7-linux-amd64/etcdctl dist/etcdctl2.Linux.x86_64
-	rm -rf dist/etcd-v2.3.7-linux-amd64
 	curl -L -s https://github.com/coreos/etcd/releases/download/v3.1.0/etcd-v3.1.0-linux-amd64.tar.gz |\
 		tar -C dist -xzf -
 	cp dist/etcd-v3.1.0-linux-amd64/etcd dist/etcd3.Linux.x86_64
@@ -35,7 +30,6 @@ dist/etcd-aws.Linux.x86_64: $(SOURCES)
 	[ -d dist ] || mkdir dist
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags '-s' \
 	  -o $@ ./etcd-aws.go ./lifecycle.go
-#	  -o $@ ./etcd-aws.go ./backup.go ./lifecycle.go
 
 container: dist/cacert.pem dist/etcd-aws.Linux.x86_64 dist/etcd.Linux.x86_64
 	docker build -t $(IMAGE_NAME) .

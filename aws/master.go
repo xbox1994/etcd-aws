@@ -8,7 +8,7 @@ import (
 	cfn "github.com/crewjam/go-cloudformation"
 )
 
-// EtcdAwsService is a systemd unit that wraps and runs etcd2
+// EtcdAwsService is a systemd unit that wraps and runs etcd3
 var EtcdAwsService = `[Unit]
 Description=configures and runs etcd in AWS.
 
@@ -20,9 +20,9 @@ Restart=always
 EnvironmentFile=/etc/etcd_aws.env
 ExecStart=/usr/bin/docker run --name etcd-aws \
   -p 2379:2379 -p 2380:2380 \
-  -v /var/lib/etcd2:/var/lib/etcd2 \
+  -v /var/lib/etcd3:/var/lib/etcd3 \
   -e ETCD_BACKUP_BUCKET -e ETCD_BACKUP_KEY \
-  --rm opsline/etcd-aws
+  --rm ksowh/etcd-aws
 ExecStop=-/usr/bin/docker rm -f etcd-aws
 `
 
@@ -42,8 +42,8 @@ Type=oneshot
 EnvironmentFile=/etc/environment
 ExecStart=/bin/bash -c '\
 set -ex; \
-eval $(docker run crewjam/ec2cluster); \
-docker run --rm crewjam/awscli cfn-signal \
+eval $(docker run ksowh/ec2cluster); \
+docker run --rm ksowh/awscli cfn-signal \
   --resource MasterAutoscale --stack $TAG_AWS_CLOUDFORMATION_STACK_ID \
   --region $REGION || true; \
 '
