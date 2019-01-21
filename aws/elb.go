@@ -17,10 +17,11 @@ func MakeMasterLoadBalancer(parameters *Parameters, t *cfn.Template) error {
 				LoadBalancerPort: cfn.String("2379"),
 				InstancePort:     cfn.String("2379"),
 				Protocol:         cfn.String("TCP"),
+				InstanceProtocol: cfn.String("TCP"),
 			},
 		},
 		HealthCheck: &cfn.ElasticLoadBalancingHealthCheck{
-			Target:             cfn.String("TCP:2379/health"),
+			Target:             cfn.String("HTTP:2379/health"),
 			HealthyThreshold:   cfn.String("2"),
 			UnhealthyThreshold: cfn.String("10"),
 			Interval:           cfn.String("10"),

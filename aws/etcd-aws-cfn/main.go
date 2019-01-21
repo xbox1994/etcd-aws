@@ -8,10 +8,10 @@ import (
 	"os"
 	"regexp"
 
+	etcdaws "etcd-aws/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/crewjam/awsregion"
 	"github.com/crewjam/go-cloudformation/deploycfn"
-	etcdaws "github.com/opsline/etcd-aws/aws"
 )
 
 func Main() error {
