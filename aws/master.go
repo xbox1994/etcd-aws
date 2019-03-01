@@ -22,7 +22,7 @@ ExecStart=/bin/bash -c '\
 set -ex; \
 docker run --rm --name etcd-aws \
   -p 2379:2379 -p 2380:2380 \
-  -v /var/lib/etcd3:/var/lib/etcd3 \
+  -v /var/lib/etcd:/var/lib/etcd \
   -e ETCD_BACKUP_BUCKET -e ETCD_BACKUP_KEY -e ETCD_MAJOR_VERSION='3' \
   ksowh/etcd-aws; \
 '

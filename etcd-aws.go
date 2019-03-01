@@ -164,6 +164,13 @@ func buildCluster(s *ec2cluster.Cluster) (initialClusterState string, initialClu
 	}
 
 	initialClusterState = "new"
+	files, err := ioutil.ReadDir("/var/lib/etcd")
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(files) > 0 {
+		initialClusterState = "existing"
+	}
 	initialCluster = []string{}
 	for _, instance := range clusterInstances {
 		if instance.PrivateIpAddress == nil {
