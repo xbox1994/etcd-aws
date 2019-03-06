@@ -34,8 +34,7 @@ dist/etcd.Linux.x86_64:
 dist/etcd-aws.Linux.x86_64: $(SOURCES)
 	[ -d dist ] || mkdir dist
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -a -installsuffix cgo -ldflags '-s' \
-	  -o $@ ./etcd-aws.go ./lifecycle.go
-#	  -o $@ ./etcd-aws.go ./backup.go ./lifecycle.go
+	  -o $@ ./etcd-aws.go
 
 container: dist/cacert.pem dist/etcd-aws.Linux.x86_64 dist/etcd.Linux.x86_64
 	docker build -t $(IMAGE_NAME) .
