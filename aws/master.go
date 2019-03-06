@@ -20,6 +20,8 @@ Restart=always
 EnvironmentFile=/etc/etcd_aws.env
 ExecStart=/bin/bash -c '\
 set -ex; \
+sudo systemctl stop update-engine; \
+sudo systemctl stop locksmithd; \
 docker run --rm --name etcd-aws \
   -p 2379:2379 -p 2380:2380 \
   -v /var/lib/etcd:/var/lib/etcd \

@@ -226,14 +226,6 @@ func main() {
 		"The path to the etcd data directory. "+
 			"Environment variable: ETCD_DATA_DIR")
 
-	defaultLifecycleQueueName := ""
-	if lq := os.Getenv("LIFECYCLE_QUEUE_NAME"); lq != "" {
-		defaultLifecycleQueueName = lq
-	}
-	lifecycleQueueName := flag.String("lifecycle-queue-name", defaultLifecycleQueueName,
-		"The name of the lifecycle SQS queue (optional). "+
-			"Environment variable: LIFECYCLE_QUEUE_NAME")
-
 	defaultEtcdMajorVersion := "2"
 	if av := os.Getenv("ETCD_MAJOR_VERSION"); av != "" {
 		defaultEtcdMajorVersion = av
@@ -375,10 +367,6 @@ func main() {
 		// 	log.Fatalf("ERROR: %s", err)
 		// }
 	}()
-
-	// watch for lifecycle events and remove nodes from the cluster as they are
-	// terminated.
-	go watchLifecycleEvents(s, *lifecycleQueueName)
 
 	// Run the etcd command
 	cmd := exec.Command(fmt.Sprintf("etcd%s", *etcdMajorVersion))
